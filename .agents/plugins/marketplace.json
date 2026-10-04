@@ -1,0 +1,20 @@
+{
+  "name": "vanta",
+  "interface": {
+    "displayName": "Vanta Plugins"
+  },
+  "plugins": [
+    {
+      "name": "fold",
+      "source": {
+        "source": "local",
+        "path": "./plugins/fold"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "vanta",
+  "owner": {
+    "name": "Vanta"
+  },
+  "plugins": [
+    {
+      "name": "fold",
+      "source": "./plugins/fold",
+      "description": "Create verified drafts from greenlit Fold listings",
+      "category": "Productivity"
+    }
+  ]
+}

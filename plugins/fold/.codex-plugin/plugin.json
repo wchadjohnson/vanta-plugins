@@ -1,0 +1,35 @@
+{
+  "name": "fold",
+  "version": "0.5.6",
+  "description": "Create verified drafts from greenlit Fold listings",
+  "author": {
+    "name": "Vanta"
+  },
+  "keywords": [
+    "fold",
+    "resale",
+    "listings",
+    "lifecycle"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Fold",
+    "shortDescription": "Create verified resale drafts from greenlit Fold listings",
+    "longDescription": "Turns your greenlit Fold listings into private Depop and Vinted drafts — through Depop's own bulk importer or one listing at a time — and keeps Fold in sync when a piece sells, including taking it down everywhere else.",
+    "developerName": "Vanta",
+    "category": "Productivity",
+    "capabilities": [
+      "Bulk listing drafts by CSV",
+      "Create verified drafts",
+      "Track sales",
+      "Update Fold"
+    ],
+    "websiteURL": "https://vanta-fold.vercel.app/",
+    "defaultPrompt": [
+      "Draft my ready Fold listings on Depop.",
+      "Put my ready Fold listings on Vinted as drafts.",
+      "Mark a Fold listing as sold."
+    ]
+  }
+}
