@@ -11,8 +11,9 @@ live on a marketplace without you.
 
 1. In the ChatGPT app, open **Customize** → **Plugins** → **Add** → **Add a marketplace**.
 2. For **Source**, enter `wchadjohnson/vanta-plugins` and choose **Add marketplace**.
-3. Open the **Personal** tab → **Vanta Plugins** → **Fold**, and install it.
-4. When asked, sign in to your Fold account and approve access.
+3. Open the **Personal** tab → **Vanta Plugins** → **Fold**, then choose **Install plugin**. Adding
+   the marketplace alone doesn't install Fold.
+4. If a browser window opens, sign in to your Fold account and approve access.
 
 Fold's plugin page has one-tap prompts to try first.
 
