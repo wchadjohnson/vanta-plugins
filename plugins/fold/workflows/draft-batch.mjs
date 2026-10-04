@@ -66,11 +66,17 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-/** Recomputes what is left to do: record first, then stop or continue. */
-function summarize(report) {
-  report.to_record = report.items
+export function expectedToRecord(report) {
+  assertObject(report, 'report')
+  const items = Array.isArray(report.items) ? report.items : []
+  return items
     .filter((item) => AWAITING_RECORD.has(item.outcome))
     .map((item) => ({ listing_id: item.listing_id, listing_url: item.draft_url }))
+}
+
+/** Recomputes what is left to do: record first, then stop or continue. */
+function summarize(report) {
+  report.to_record = expectedToRecord(report)
   const stopped = report.items.some((item) => STOPPING.has(item.outcome))
   const awaiting = report.items.some((item) => item.outcome === O.awaitingConfirmation)
   if (report.to_record.length > 0) report.next = 'record'

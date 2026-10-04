@@ -298,11 +298,17 @@ export async function reconcileDeliveredRows({
   awaiting,
   maxDraftReads = 60,
   knownUrls = new Map(),
+  deadline = null,
+  now = Date.now,
 } = {}) {
   assertCapability(capability)
   if (!Number.isInteger(maxDraftReads) || maxDraftReads < 0) {
     throw new TypeError('maxDraftReads must be a non-negative integer')
   }
+  if (deadline !== null && !Number.isFinite(deadline)) throw new TypeError('deadline must be a timestamp or null')
+  // A caller with a time budget (a host call that ends at a hard limit) stops opening pages at the
+  // deadline; rows not yet matched stay awaiting confirmation, which is the safe outcome.
+  const outOfTime = () => deadline !== null && now() >= deadline
   if (!(knownUrls instanceof Map)) throw new TypeError('knownUrls must be a Map')
   const rows = awaitingRows(awaiting)
   const wanted = new Map(rows.filter((row) => row.delivered).map((row) => [row.sku, row]))
@@ -324,6 +330,7 @@ export async function reconcileDeliveredRows({
       // One snapshot pass, then one more only if it surfaced a URL not yet read: a draft list does
       // not change while it is being read, so a third pass would only spend the budget.
       for (;;) {
+        if (outOfTime()) break
         const snapshot = await capability.snapshotDraftUrls()
         for (const view of snapshot.pending_views ?? []) pendingViews.add(view)
         let sawNewUrl = false
@@ -332,7 +339,7 @@ export async function reconcileDeliveredRows({
             remember(url, knownUrls.get(url))
             continue
           }
-          if (readUrls.has(url) || draftReads >= maxDraftReads) continue
+          if (readUrls.has(url) || draftReads >= maxDraftReads || outOfTime()) continue
           sawNewUrl = true
           readUrls.add(url)
           draftReads += 1

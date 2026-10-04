@@ -17,6 +17,9 @@ live on a marketplace without you.
 
 Fold's plugin page has one-tap prompts to try first.
 
+After updating Fold, ChatGPT may ask you to sign in to Fold again. If your assistant says it
+can't reach Fold, open **Plugins → Fold** and sign in (or choose **Reconnect**).
+
 ## Install in Claude
 
 1. Open the Claude app → **Customize** → **Plugins** → **Add**, and add the marketplace

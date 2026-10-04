@@ -9,6 +9,16 @@ Use Fold as the source of truth for listings the user has greenlit. Help the use
 copy all qualified greenlit listings to a supported resale platform as drafts, or sync a confirmed
 sale back to Fold.
 
+## First: are Fold's tools connected?
+
+Before anything else, check that Fold's MCP tools are available to you (`mcp__fold__*` —
+`list_ready_listings`, `export_depop_csv`, `report_csv_upload`, `mark_published`, `mark_sold`; in a
+host that defers tools, look them up first). If they are not, tell the seller Fold needs them to sign
+in — in ChatGPT: **Plugins → Fold → sign in** (or **Reconnect**); after a plugin update ChatGPT may
+ask for this again — and **stop**. Never read the Fold web page, a Fold browser tab or a screenshot as
+a substitute for `list_ready_listings`, and never infer greenlit, ready or published status from the
+Fold UI. Only Fold's tools answer those questions.
+
 ## Understand the request
 
 - “Greenlit,” “approved,” and “ready” refer only to listings returned by the current
@@ -49,10 +59,11 @@ of these by name, they are exactly here. Fold's own tools (`list_ready_listings`
 `mark_published`, `export_depop_csv`, `report_csv_upload`) come from the Fold MCP server, not a local
 file.
 
-- `workflows/post-drafts.mjs` — `postDrafts` and `createFoldToolBridge`. **Posting drafts to Depop
-  (bulk) or Vinted means calling `postDrafts` and nothing else** — see **Post drafts** below. Do not
-  import or call `exportDepopCsvBatch`, `importCsvBatch`, `runDraftBatch`, `recordDraftResult` or a
-  provider factory yourself for that; `postDrafts` wires them in the right order.
+- `workflows/post-drafts.mjs` — the draft-posting phases `depopPrepare`, `depopUpload`,
+  `vintedDraft`, `summarizeResults`, and `codexBrowser`. **Posting drafts to Depop (bulk) or Vinted
+  means running these phases and nothing else** — see **Post drafts** below. Do not import or call
+  `exportDepopCsvBatch`, `importCsvBatch`, `runDraftBatch`, `recordDraftResult` or a provider
+  factory yourself for that; the phases wire them in the right order.
 - `workflows/draft-batch.mjs` — `acceptExistingDraft`, for a Vinted `existing_draft` the seller
   confirmed (see the outcomes below)
 - `workflows/lifecycle.mjs` — `saveAndVerifyDraft`, for Depop per-field creation only
@@ -62,9 +73,9 @@ file.
   `createAuthenticatedDepopTargetProfile`
 
 Two draft platforms are supported. Depop has two paths: the bulk one hands Depop's own bulk-listing
-page a CSV (the default, through `postDrafts`), the per-field one drives the create form — see
+page a CSV (the default, through the Depop phases), the per-field one drives the create form — see
 **Choose how listings reach Depop** below. Vinted has one: the vinted.com sell form, one listing per
-call, also through `postDrafts`. Every path uses a host-provided browser service to adapt one visible
+`vintedDraft` call. Every path uses a host-provided browser service to adapt one visible
 semantic browser tab; none installs another browser service. Select the transport by the host, never
 by the browser's brand:
 
@@ -72,8 +83,10 @@ by the browser's brand:
   host bound, plus `reacquireTab(tabId, url)` (rebind the same tab id after navigation — Codex tab
   bindings go stale), `releaseTab(tabId, replacementTabId)` (close a superseded binding) and, for
   Vinted, `openFreshTab(url)` (a half-filled form left by a failed attempt makes Vinted refuse to
-  navigate that tab). The installed driver verifies URLs, uses exact browser-client locators and
-  the file-chooser API; do not synthesize a raw MCP bridge or use private RPC.
+  navigate that tab). `codexBrowser({ cua, browserId, tabId })` builds exactly these options; call
+  it inside the same `js` call as the phase that uses them. The installed driver verifies URLs, uses
+  exact browser-client locators and the file-chooser API; do not synthesize a raw MCP bridge or use
+  private RPC.
 - **Claude in Chrome with a live bridge** — provider `claude-in-chrome` with `callTool` (forwards one
   `mcp__claude-in-chrome__*` call from inside the running code) and the selected `tabId`. A Bash- or
   Node-spawned process is a separate OS process and cannot do this; verify with a trivial call before
@@ -119,106 +132,208 @@ approval of the listings. State the plan in one sentence — how many listings, 
 private drafts, never posted — then call. Still drafts only: never Post, Publish, Upload-live, Make
 live or Ready to post; never retry a failed upload; never re-upload a pending row.
 
-**One call per marketplace, one entry point.** `postDrafts({ marketplace, callTool, browser, ... })`
-from `workflows/post-drafts.mjs` does everything: it filters Fold's ready set to that marketplace,
-proves the page usable before Fold exports anything, writes the CSV itself, uploads, reports the
-upload to Fold, records each draft with `mark_published`, and returns one `fold-post-drafts/1`
-report. `callTool(name, args)` must call Fold's MCP tool by its own name (`list_ready_listings`,
-`export_depop_csv`, `report_csv_upload`, `mark_published`).
+**Phases, never one long run.** Posting is a short sequence of phases from
+`workflows/post-drafts.mjs`. Each browser phase does all of its browser work inside the one call that
+runs it and returns a plain JSON result; Fold's tools are called **between** phases, by you, and their
+answers are handed to the next phase through private temp files the phases name. No phase ever waits
+for a Fold answer, so nothing is left running between calls.
 
-- **Depop** (bulk): one call; `report.next` is always `'done'`.
-- **Vinted**: one draft per call. While `report.next` is `'continue'` or `'confirm'`, call again with
-  the same arguments plus `resumeFrom: report.report_path`. Stop on `'done'` or `'stop'`.
+- **Depop** (bulk): `depopPrepare` (proves the bulk page usable; no Fold call) → you call
+  `export_depop_csv` and save its result to `prepared.export_path` → `depopUpload` (writes the CSV,
+  uploads once, reads Depop's notice, correlates drafts by SKU, reconciles rows earlier runs
+  delivered) → you run the `fold_calls` it names, in order (`report_csv_upload` exactly once, then
+  one `mark_published` per correlated draft) → `summarizeResults` gives the final report.
+- **Vinted**: you call `list_ready_listings` and save its result → `vintedDraft` (one draft per call,
+  Vinted listings only) → you run its `fold_calls` (`mark_published`) → `summarizeResults`. While the
+  `next` you end on is `'continue'` or `'confirm'`, run `vintedDraft` again with
+  `resumeFrom: step.report_path` and the same `readyPath`. Stop on `'done'` or `'stop'`.
+
+Run each `fold_calls` list exactly as written, once, in order. Never retry a Fold call, never skip
+`report_csv_upload`, never run `depopUpload` twice for one `depopPrepare` (it refuses: an upload is
+never repeated). If `prepared.next` is `'stop'`, do not export at all — report the reason.
 
 ### Codex app (in-app Browser)
 
 In the Codex app Fold's tools and the browser live in **different runtimes**: Fold's MCP tools are
 callable only from `exec` (`tools.mcp__fold__*`), the browser `cua` only from the `cua_repl` `js`
-tool, and neither can call the other. So `postDrafts` runs in `js` with the file relay
-`createFoldToolBridge`, and `exec` answers the Fold calls it parks. Copy these blocks; do not
-hand-wire the internals.
+tool, and neither can call the other. Browser access is also bound to the `js` call that started the
+work: a promise still running when its `js` call returns loses the browser for good ("node_repl exec
+context not found"), even with a fresh tab handle. So alternate `js` and `exec` exactly as below.
+Every `js` block awaits its phase to the end and builds its browser options with
+`codexBrowser({ cua, browserId, tabId, onTabChange })` **inside that same call**; never reuse a tab
+object or browser options from an earlier call, and never leave a promise running at the end of a
+call.
 
 **Module cache.** `cua_repl` keeps imported modules cached by path for the life of its kernel. Import
 from the installed version's folder — `~/.codex/plugins/cache/vanta/fold/<installed version>/`, read
 the version from the installed plugin, never hard-code an older one — or restart the kernel after an
 update.
 
-1. **`js` (cua_repl) — start the run.** Use `var` so the handles survive between calls.
+**Timeouts.** Run every `depopUpload` and `vintedDraft` `js` call with `timeout_ms: 300000`
+(`DEPOP_UPLOAD_JS_TIMEOUT_MS`): a Depop upload waits up to two minutes for Depop to import and keeps
+its own work, draft matching included, under 270 seconds; a Vinted step drafts one listing. The
+other phases fit the default.
+
+**Exec preamble.** Paste this at the top of every `exec` block below. It calls one Fold tool (a
+thrown error becomes an `isError` result, never a retry) and writes JSON privately in 16 KiB chunks
+through a `.part` file:
+
+```js
+const sh = (cmd) => tools.exec_command({ cmd, max_output_tokens: 20000 })
+const quote = (value) => String(value).replaceAll("'", "'\\''")
+async function callFold(name, args) {
+  try {
+    return await tools[`mcp__fold__${name}`](args)
+  } catch (error) {
+    return { isError: true, content: [{ type: 'text', text: String(error?.message ?? error) }] }
+  }
+}
+async function writePrivateJson(file, value) {
+  const chunks = JSON.stringify(value).match(/[\s\S]{1,16384}/g) ?? ['']
+  const partial = `${file}.part`
+  for (const [index, chunk] of chunks.entries()) {
+    const redirect = index === 0 ? '>' : '>>'
+    const prefix = index === 0 ? 'umask 077; ' : ''
+    await sh(`${prefix}printf '%s' '${quote(chunk)}' ${redirect} '${quote(partial)}'`)
+  }
+  await sh(`mv '${quote(partial)}' '${quote(file)}'`)
+}
+```
+
+**Run the Fold calls a phase named** (used by both marketplaces, only when the phase returned
+`next: 'call_fold'`) — `exec`, after the preamble, with the phase's `fold_calls_path` pasted in:
+
+```js
+const job = JSON.parse((await sh(`cat '<fold_calls_path>'`)).output)
+const results = []
+for (const call of job.fold_calls) {
+  results.push({ name: call.name, result: await callFold(call.name, call.args) })
+}
+await writePrivateJson(job.results_path, results)
+text(results.map((entry) => `${entry.name}: ${entry.result?.isError === true ? 'error' : 'ok'}`))
+```
+
+#### Depop
+
+1. **`js` — prepare.** Use `var` so the values survive between calls.
 
    ```js
    var root = '<installed plugin root>'
-   var { postDrafts, createFoldToolBridge } = await import(`${root}/workflows/post-drafts.mjs`)
-   var browserId = '<browser id of the open marketplace tab>'
-   var tab = await cua.getTab('<that tab id>', { browser: browserId })
-   var bridge = createFoldToolBridge({
-     directory: `/tmp/fold-bridge-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+   var post = await import(`${root}/workflows/post-drafts.mjs`)
+   var browserId = '<browser id of the open Depop tab>'
+   var tabId = '<that tab id>'
+   var onTabChange = (id) => { tabId = id }
+   var prepared = await post.depopPrepare({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
    })
-   var postArgs = {
-     marketplace: 'depop', // or 'vinted'
-     callTool: bridge.callTool,
-     memberId: '<Vinted only: the number in https://www.vinted.com/member/{id}>',
-     browser: {
-       provider: 'codex-browser-client',
-       tab,
-       reacquireTab: async (id) => (tab = await cua.getTab(id, { browser: browserId })),
-       releaseTab: async (id, replacementId) => {
-         if (id !== replacementId) await (await cua.getTab(id, { browser: browserId })).close()
-       },
-       openFreshTab: async (url) => (tab = await cua.createBrowserTab(browserId, url, { visible: true })),
-     },
-   }
-   var step = await bridge.start(postDrafts(postArgs))
+   prepared
+   ```
+
+   If `prepared.next` is `'stop'`, report `prepared.report.summary_text` and stop. Nothing was
+   exported.
+
+2. **`exec` — export.** After the preamble, with `prepared.export_path` pasted in:
+
+   ```js
+   const exported = await callFold('export_depop_csv', {})
+   await writePrivateJson('<prepared.export_path>', exported)
+   text(exported?.isError === true ? 'Fold refused the export' : 'export saved')
+   ```
+
+3. **`js` with `timeout_ms: 300000` — upload.** Run it even if Fold refused the export; it reports
+   that without touching the page.
+
+   ```js
+   var uploaded = await post.depopUpload({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+     statePath: prepared.state_path,
+     exportPath: prepared.export_path,
+   })
+   uploaded
+   ```
+
+4. If `uploaded.next` is `'call_fold'`, **`exec` — run the Fold calls** with
+   `uploaded.fold_calls_path` (block above).
+
+5. **`js` — final report.**
+
+   ```js
+   var summary = uploaded.next === 'call_fold'
+     ? await post.summarizeResults({ statePath: prepared.state_path, resultsPath: uploaded.results_path })
+     : uploaded.report
+   summary
+   ```
+
+#### Vinted
+
+1. **`exec` — ready listings.** After the preamble:
+
+   ```js
+   const dir = (await sh(`umask 077; mktemp -d "\${TMPDIR:-/tmp}/fold-ready-XXXXXXXX"`)).output.trim()
+   const ready = await callFold('list_ready_listings', {})
+   await writePrivateJson(`${dir}/ready.json`, ready)
+   text(`${dir}/ready.json`)
+   ```
+
+2. **`js` with `timeout_ms: 300000` — one draft.** The first time:
+
+   ```js
+   var root = '<installed plugin root>'
+   var post = await import(`${root}/workflows/post-drafts.mjs`)
+   var browserId = '<browser id of the open Vinted tab>'
+   var tabId = '<that tab id>'
+   var onTabChange = (id) => { tabId = id }
+   var readyPath = '<the ready.json path exec printed>'
+   var memberId = '<the number in https://www.vinted.com/member/{id}>'
+   var step = await post.vintedDraft({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+     readyPath,
+     memberId,
+   })
    step
    ```
 
-2. **`exec` — answer the parked Fold calls** whenever `step.next` is `'call_fold'`. Paste
-   `step.requests_path` in place of the placeholder:
+   Every later step, in a new `js` call with `timeout_ms: 300000`:
 
    ```js
-   const sh = (cmd) => tools.exec_command({ cmd, max_output_tokens: 20000 })
-   const req = JSON.parse((await sh(`cat '<step.requests_path>'`)).output)
-   const answers = {}
-   for (const call of req.calls) {
-     try {
-       answers[call.id] = await tools[`mcp__fold__${call.name}`](call.args)
-     } catch (error) {
-       answers[call.id] = { isError: true, content: [{ type: 'text', text: String(error?.message ?? error) }] }
-     }
-   }
-   const quote = (value) => String(value).replaceAll("'", "'\\''")
-   const json = JSON.stringify(answers)
-   const chunks = json.match(/[\s\S]{1,16384}/g) ?? ['']
-   const partial = `${req.response_path}.part`
-   for (const [index, chunk] of chunks.entries()) {
-     const redirect = index === 0 ? '>' : '>>'
-     const prefix = index === 0 ? 'umask 077; ' : ''
-     await sh(`${prefix}printf '%s' '${quote(chunk)}' ${redirect} '${partial}'`)
-   }
-   await sh(`mv '${partial}' '${req.response_path}'`)
-   text(req.calls.map((call) => call.name))
+   step = await post.vintedDraft({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+     readyPath,
+     memberId,
+     resumeFrom: step.report_path,
+   })
+   step
    ```
 
-3. **`js` — hand the answers back:** `step = await bridge.deliver(); step`. If `step.next` is
-   `'working'` the run is still busy in the browser (uploads and draft polling take time): call
-   `step = await bridge.step(); step`. Repeat 2–3 until `step.next` is `'finished'`; the report is
-   `step.report` (`'error'` carries the thrown message). For Vinted, while `step.report.next` is
-   `'continue'` or `'confirm'`, start the next step with
-   `step = await bridge.start(postDrafts({ ...postArgs, resumeFrom: step.report.report_path })); step`.
+3. If `step.next` is `'call_fold'`, **`exec` — run the Fold calls** with `step.fold_calls_path`, then
+   **`js`**:
 
-A Depop run is typically: start → export → deliver → (working) → report + record → finished. If your
-host lets one runtime call both Fold and the browser, skip the bridge and pass
-`callTool: (name, args) => tools[`mcp__fold__${name}`](args)` directly. If no runtime can write the
-relay files, stop and tell the user; do not fall back to hand-wiring the workflow modules.
+   ```js
+   var summary = await post.summarizeResults({ statePath: step.report_path, resultsPath: step.results_path })
+   summary
+   ```
+
+   and continue with `summary.next`; otherwise continue with `step.next` (the report is
+   `step.report`). While that is `'continue'` or `'confirm'`, go back to step 2 ("every later
+   step"). Stop on `'done'` or `'stop'`.
+
+If no runtime can write the temp files, stop and tell the user; do not fall back to hand-wiring the
+workflow modules.
 
 ### Claude in Chrome with a live bridge
 
-`postDrafts({ marketplace, callTool: <your Fold caller>, browser: { provider: 'claude-in-chrome',
-callTool: <your mcp__claude-in-chrome__* bridge>, tabId }, memberId })` — the browser's `callTool` is
-nested inside `browser` so it never collides with Fold's.
+Run the same phases with `browser: { provider: 'claude-in-chrome', callTool: <your
+mcp__claude-in-chrome__* bridge>, tabId }` (and `memberId` for Vinted), awaiting each phase to the
+end. Call Fold's tools yourself between phases and save each raw result as JSON where the phase says:
+the export to `prepared.export_path`, the ready listings to a private temp file you pass as
+`readyPath`, and the results of a `fold_calls_path` job as `[{ name, result }]`, in order, to that
+job's `results_path`.
 
 ### Report
 
-Say plainly what `report.summary_text` says, then each entry of `report.listings` by `outcome`:
+`report` below is the final report: `summary` after `summarizeResults`, or the phase's own `report`
+when it named no Fold calls. Say plainly what `report.summary_text` says, then each entry of
+`report.listings` by `outcome`:
 
 - `recorded` — draft created and recorded in Fold (`reconciled: true`: it came from an earlier
   run's upload and was matched by SKU now).
@@ -254,8 +369,8 @@ every `report.export.blanked_cells` entry (a value Fold withheld because it did 
 list for that field — tell the seller which listing, field and value so they can fix it), and
 `report.upload_report.outcome`. Fold leases what it exports for 30 minutes: a run that failed before
 delivering the file has already released the hold (`report_csv_upload` with `uploaded: false`); a
-delivered file keeps its rows held until a later run matches their drafts by SKU, which `postDrafts`
-does automatically. `report.other_marketplace_listings` are ready listings for other marketplaces —
+delivered file keeps its rows held until a later run matches their drafts by SKU, which
+`depopUpload` does automatically. `report.other_marketplace_listings` are ready listings for other marketplaces —
 offer to post those separately; they are not failures. `report.fold_errors` lists Fold calls that
 failed; they are never retried.
 
@@ -265,10 +380,10 @@ The seller posts drafts inside the marketplace.
 
 ## Bulk listing without a live code-execution bridge (native browser tools)
 
-Use this only when you cannot run `postDrafts` against a live browser transport (see **Know the
+Use this only when you cannot run the **Post drafts** phases against a live browser transport (see **Know the
 capability boundary**) — for example, a Bash/Node/Bun tool that can execute this repository's files
 but cannot itself call your browser MCP tools mid-script. You then do by hand, in this order, what
-`postDrafts` does; the outcome meanings in **Post drafts → Report** are unchanged.
+the phases do; the outcome meanings in **Post drafts → Report** are unchanged.
 
 **Order matters: prove the page before exporting.** Fold leases the rows it exports for 30 minutes.
 Exporting onto a page that then fails leaves listings held with nothing uploaded.
