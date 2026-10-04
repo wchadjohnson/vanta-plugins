@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+// Imported, never the global: the ChatGPT app's browser runtime loads node: modules but does not
+// define Node's `process` global.
+import process from 'node:process'
 
 import { createAuthenticatedDepopTargetProfile } from '../adapters/depop/profile.mjs'
 import { createDepopBulkListingCapabilityForProvider } from '../adapters/depop/provider-capabilities.mjs'
