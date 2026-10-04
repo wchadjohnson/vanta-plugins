@@ -9,10 +9,12 @@ live on a marketplace without you.
 
 ## Install in ChatGPT
 
-1. Open the ChatGPT app → **Settings** → **Plugins** → **Add** → **Add plugin marketplace**.
+1. In the ChatGPT app, open **Customize** → **Plugins** → **Add** → **Add a marketplace**.
 2. For **Source**, enter `wchadjohnson/vanta-plugins` and choose **Add marketplace**.
-3. Open **Customize** → **Plugins** → **Personal** → **Vanta Plugins**, then install **Fold**.
+3. Open the **Personal** tab → **Vanta Plugins** → **Fold**, and install it.
 4. When asked, sign in to your Fold account and approve access.
+
+Fold's plugin page has one-tap prompts to try first.
 
 ## Install in Claude
 
