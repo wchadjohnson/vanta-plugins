@@ -84,7 +84,20 @@ function summarize(report) {
 
 /** Seller-facing notes an adapter attached, e.g. Vinted's request for authenticity photos. */
 function noteFields(notes) {
-  return typeof notes?.authenticity_hint === 'string' ? { authenticity_hint: notes.authenticity_hint } : {}
+  const fields = {}
+  if (typeof notes?.authenticity_hint === 'string') fields.authenticity_hint = notes.authenticity_hint
+  if (
+    notes?.brand_id_fallback !== null &&
+    typeof notes?.brand_id_fallback === 'object' &&
+    typeof notes.brand_id_fallback.brand_id === 'string' &&
+    ['name_match', 'custom'].includes(notes.brand_id_fallback.selected)
+  ) {
+    fields.brand_id_fallback = {
+      brand_id: notes.brand_id_fallback.brand_id,
+      selected: notes.brand_id_fallback.selected,
+    }
+  }
+  return fields
 }
 
 function failedItem(failed) {

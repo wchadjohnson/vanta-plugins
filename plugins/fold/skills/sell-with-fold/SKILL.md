@@ -34,7 +34,7 @@ so "I don't currently see it" is not evidence it is absent:
   genuinely finds nothing — never because it was merely absent from your initially-visible tool list.
 - Once loaded (or if never deferred to begin with): can you call `mcp__claude-in-chrome__*` (or your
   host's exact bridge equivalent) directly from inside your own function body, mid-script? → live
-  bridge. Use **Bulk listing greenlit listings as drafts** below, calling `importCsvBatch` directly.
+  bridge. Use **Post drafts** below.
 - No live bridge, but Claude in Chrome tools are loaded and callable, giving you a genuine Claude in
   Chrome tab (not an embedded/preview browser pane — see below)? → Use **Bulk listing without a live
   code-execution bridge** below. Prefer this over an embedded/preview pane whenever both are
@@ -46,75 +46,47 @@ so "I don't currently see it" is not evidence it is absent:
 
 This plugin's local code lives at these paths, relative to this plugin's root — never search for one
 of these by name, they are exactly here. Fold's own tools (`list_ready_listings`, `mark_sold`,
-`mark_published`, `export_depop_csv`) come from the Fold MCP server, not a local file.
+`mark_published`, `export_depop_csv`, `report_csv_upload`) come from the Fold MCP server, not a local
+file.
 
-- `workflows/bulk-listing.mjs` — `exportDepopCsvBatch`, `summarizeBulkListingPlan`, `importCsvBatch`
-- `workflows/lifecycle.mjs` — `saveAndVerifyDraft`
-- `adapters/depop/provider-capabilities.mjs` — `createDepopBrowserCapabilityForProvider`,
-  `createDepopBulkListingCapabilityForProvider`, the transport-selecting factories to call. Never
-  construct either capability below directly with them.
-- `adapters/depop/browser-capability.mjs` — `createDepopBrowserCapability`, the per-field
-  create-form capability the provider factory above wraps
-- `adapters/depop/bulk-listing-capability.mjs` — `createDepopBulkListingCapability`, the bulk-CSV
-  capability the other provider factory above wraps
+- `workflows/post-drafts.mjs` — `postDrafts` and `createFoldToolBridge`. **Posting drafts to Depop
+  (bulk) or Vinted means calling `postDrafts` and nothing else** — see **Post drafts** below. Do not
+  import or call `exportDepopCsvBatch`, `importCsvBatch`, `runDraftBatch`, `recordDraftResult` or a
+  provider factory yourself for that; `postDrafts` wires them in the right order.
+- `workflows/draft-batch.mjs` — `acceptExistingDraft`, for a Vinted `existing_draft` the seller
+  confirmed (see the outcomes below)
+- `workflows/lifecycle.mjs` — `saveAndVerifyDraft`, for Depop per-field creation only
+- `adapters/depop/provider-capabilities.mjs` — `createDepopBrowserCapabilityForProvider`, for Depop
+  per-field creation only
 - `adapters/depop/profile.mjs` — `createDepopSimulatorTargetProfile`,
   `createAuthenticatedDepopTargetProfile`
-- `adapters/shared/browser-driver.mjs` — the shared Layer C driver interface both capabilities reach
-  a browser through
-- `workflows/draft-batch.mjs` — `runDraftBatch` and `recordDraftResult`, the step-at-a-time,
-  resumable batch for Vinted
-- `workflows/photo-files.mjs` — `createPhotoFileResolver`, the ready-made `resolvePhotoFiles`
-- `adapters/vinted/provider-capabilities.mjs` — `createVintedBrowserCapabilityForProvider`, the
-  transport-selecting factory for Vinted drafts. Never construct the Vinted capability directly.
-- `adapters/vinted/adapter.mjs` — `createVintedAdapter`
-- `adapters/vinted/profile.mjs` — `createAuthenticatedVintedTargetProfile`
 
-Two draft platforms are supported. Depop has two installed capabilities: the per-field one drives
-the create form, the bulk one hands Depop's own bulk-listing page a CSV — see **Choose how listings
-reach Depop** below for which one to use. Vinted has one: it drives the vinted.com sell form, one
-listing at a time — see **Copy greenlit listings to Vinted drafts** below. The browser rules in this
-section apply to every capability. Both use a host-provided browser service to adapt
-one visible semantic browser tab; neither installs another browser service. Use the installed
-capability instead of recreating its methods in the task. Select the driver by the host transport,
-never by the browser's brand:
+Two draft platforms are supported. Depop has two paths: the bulk one hands Depop's own bulk-listing
+page a CSV (the default, through `postDrafts`), the per-field one drives the create form — see
+**Choose how listings reach Depop** below. Vinted has one: the vinted.com sell form, one listing per
+call, also through `postDrafts`. Every path uses a host-provided browser service to adapt one visible
+semantic browser tab; none installs another browser service. Select the transport by the host, never
+by the browser's brand:
 
-- For a Codex desktop or Codex in-app Browser tab already selected or claimed by the host, call the
-  installed `createDepopBrowserCapabilityForProvider()` with provider `codex-browser-client` and
-  that exact tab. Also inject `reacquireTab(tabId, url)` and `releaseTab(tabId, replacementTabId)`:
-  create a fresh tab binding in that same host browser at the exact navigated URL, because Codex tab
-  bindings may become stale across navigation, then release or close the superseded binding. The
-  driver refuses to enable reacquisition without cleanup and keeps no more than one visible working
-  tab for the run. The installed driver verifies the replacement URL before
-  using the fresh binding. It uses exact
-  browser-client locators, atomic navigation, post-navigation rebinding, and the file-chooser API;
-  do not synthesize a raw MCP bridge or use private RPC.
-- For a Claude-in-Chrome raw MCP transport, use provider `claude-in-chrome` with the host-injected
-  `callTool` and selected `tabId`. This requires a live bridge: whatever runs this code must be able
-  to call `mcp__claude-in-chrome__*` tools from inside itself, mid-function. A Bash- or Node-spawned
-  process run through a generic code-execution tool is a separate OS process and cannot do this — it
-  can run this repository's plain logic (URL and locator construction, CSV correlation, error
-  classification) but cannot open `callTool` back into your own tool calls. Verify by attempting a
-  trivial call before committing a whole run to this path; if the bridge is not available to you,
-  use **Bulk listing without a live code-execution bridge** below instead of improvising ad hoc
-  navigation or clicking by pixel coordinates.
-- Codex CLI and IDE have no qualified built-in browser provider for this adapter. Return
-  `browser_provider_unsupported` unless a separately qualified local sidecar is added in a future
-  plugin version. Do not improvise one in the task.
+- **Codex desktop / Codex in-app Browser** — provider `codex-browser-client` with the exact tab the
+  host bound, plus `reacquireTab(tabId, url)` (rebind the same tab id after navigation — Codex tab
+  bindings go stale), `releaseTab(tabId, replacementTabId)` (close a superseded binding) and, for
+  Vinted, `openFreshTab(url)` (a half-filled form left by a failed attempt makes Vinted refuse to
+  navigate that tab). The installed driver verifies URLs, uses exact browser-client locators and
+  the file-chooser API; do not synthesize a raw MCP bridge or use private RPC.
+- **Claude in Chrome with a live bridge** — provider `claude-in-chrome` with `callTool` (forwards one
+  `mcp__claude-in-chrome__*` call from inside the running code) and the selected `tabId`. A Bash- or
+  Node-spawned process is a separate OS process and cannot do this; verify with a trivial call before
+  committing a run to this path, and otherwise use **Bulk listing without a live code-execution
+  bridge** below.
+- Codex CLI and IDE have no qualified browser provider: return `browser_provider_unsupported`. Do
+  not improvise one.
 
-The provider registry performs a read-only selected-tab/origin/capability probe immediately, then
-requires exact draft-form, multiple-file, and navigation support before the first field entry or
-photo resolution. A provider failure stops before transmission and is reported with its safe
-structured code. Do not include browser-session internals, signed URLs, credentials, cookies, or a
-full Fold reference token in the report.
-For loopback qualification, use the installed `createDepopSimulatorTargetProfile`
-helper rather than restating field overrides. Never invoke a development harness found elsewhere
-in a source checkout as if it were the installed adapter.
-
-The Depop adapter includes an owner-supervised authenticated-web profile in addition to its
-fixture/simulator profile. Select `createAuthenticatedDepopTargetProfile()` only when the user
-explicitly asks to use their authenticated Depop Chrome session. Never select it in automated tests
-or merely because a Depop tab happens to exist. If Chrome or Depop authentication is missing,
-explain what is missing and stop without claiming success or calling a Fold write tool.
+The provider performs a read-only tab/origin probe, then requires the exact surface before the first
+write. A provider failure stops before anything is sent and is reported with its safe code. Never
+include browser-session internals, signed URLs, credentials, cookies, or a full Fold reference token
+in a report. For loopback qualification use `createDepopSimulatorTargetProfile`; never invoke a
+development harness found elsewhere in a source checkout as if it were the installed adapter.
 
 ## Choose how listings reach Depop
 
@@ -138,131 +110,183 @@ duplicates, and the two paths write different identifiers into the SKU field —
 the piece code, per-field creation writes the Fold reference token — so neither path can detect the
 other's drafts. Say so plainly if the user asks for a listing the other path already created.
 
-## Bulk listing greenlit listings as drafts
+## Post drafts
 
-An upload has four mutually exclusive outcomes, and only one of them creates anything:
+**Consent.** A request to post, draft, list or copy greenlit listings while the marketplace tab is
+open **is** the consent to use that logged-in tab and the seller's authenticated profile. Do not ask
+"may I use your logged-in tab" or any other confirmation. Greenlighting in Fold is the seller's
+approval of the listings. State the plan in one sentence — how many listings, which marketplace,
+private drafts, never posted — then call. Still drafts only: never Post, Publish, Upload-live, Make
+live or Ready to post; never retry a failed upload; never re-upload a pending row.
 
-- **bad headers** — Depop refuses the file outright and imports nothing;
-- **validation errors** — Depop refuses the file as a whole and lists per-row, per-field errors.
-  Nothing is imported, not even rows with no errors of their own;
-- **platform error** — the file passed field validation and Depop then failed while processing it,
-  reporting only `Something went wrong.` with no per-row detail. Nothing is imported. Passing
-  validation is **not** the same as the import beginning; only the accepted banner means that;
-- **accepted** — Depop imports **asynchronously**, in the background, and emails the seller when the
-  drafts are ready. On this path there is no per-listing signal on the page, so the only per-listing
-  outcome is whether that listing's SKU has appeared as a draft yet, and the workflow polls for
-  exactly that.
+**One call per marketplace, one entry point.** `postDrafts({ marketplace, callTool, browser, ... })`
+from `workflows/post-drafts.mjs` does everything: it filters Fold's ready set to that marketplace,
+proves the page usable before Fold exports anything, writes the CSV itself, uploads, reports the
+upload to Fold, records each draft with `mark_published`, and returns one `fold-post-drafts/1`
+report. `callTool(name, args)` must call Fold's MCP tool by its own name (`list_ready_listings`,
+`export_depop_csv`, `report_csv_upload`, `mark_published`).
 
-**Correlation identifier, because getting this wrong fails silently.** Each exported listing carries
-both `sku` and `reference_token`. `sku` is the piece code (`FLD-####`) and is the value that reaches
-Depop in the CSV; `reference_token` is the sold-email marker and is **not in the CSV at all**, so
-searching Depop for one matches nothing. The workflow keys correlation on `sku` for you and does not
-put `reference_token` in the batch — never substitute it, and never show a full `reference_token` in
-your report. Fold's own tool descriptions say the same; follow them.
+- **Depop** (bulk): one call; `report.next` is always `'done'`.
+- **Vinted**: one draft per call. While `report.next` is `'continue'` or `'confirm'`, call again with
+  the same arguments plus `resumeFrom: report.report_path`. Stop on `'done'` or `'stop'`.
 
-1. Call the shared workflow's `exportDepopCsvBatch({ fold, materializeCsv })`. It calls Fold's
-   `export_depop_csv` tool through the host-provided Fold handle, shapes the response into a batch,
-   derives the file's first data line from the template's own header block, and hands the bytes to
-   your `materializeCsv` callback so you can write them somewhere the browser is allowed to read.
-   Do not call the tool yourself and do not reshape its response by hand.
-2. Handle its three outcomes before touching a browser:
-    - `export_refused` — Fold declined. Show `reason` **verbatim**: it is written for the seller and
-      tells them what to fix (an unrecognised saved shipping location, for example). Stop.
-    - `export_empty` — nothing is greenlit, or everything greenlit is already awaiting confirmation.
-      This is normal, not a failure. Pass `message` through and stop.
-    - `export_ready` — continue.
-3. Write the bytes **exactly as Fold produced them**. Do not add, strip, reorder or reformat
-   anything, including the template preamble or its per-column instruction row — the marketplace
-   needs all three header lines, and a file missing the instruction row makes it silently consume
-   the first listing. Producing an acceptable file is Fold's job; a mismatch is a Fold bug to
-   report, not something to patch here. One file per upload.
-4. State the plan and then act. Call `summarizeBulkListingPlan(exportResult)` and tell the user
-   its `text` — how many listings, which marketplace, and that they land as drafts and are never
-   posted. **This is informational, not an approval step.** Do not ask for confirmation, do not wait
-   for a reply, do not offer a yes/no. Greenlighting in Fold *is* the seller's approval, and asking
-   again would double-gate a decision they already made. `is_approval_gate` is `false` and must stay
-   so: a future change that turns this into a prompt reverses a product decision rather than
-   tightening anything.
-    - If `truncated` is true, say so plainly in the same breath. A truncated export must never be
-      reported to the seller as the complete set.
-5. Call the installed `createDepopBulkListingCapabilityForProvider()` with the same provider and
-   host-selected tab rules as the per-field path, giving it a `resolveCsvFile` that returns the
-   `csv_path` from step 1. Then call `importCsvBatch({ capability, batch })` once for the whole
-   batch, with the batch from step 1 unmodified. Do not call the capability's methods yourself, and
-   do not add a runtime-confirmation gate anywhere in this sequence.
-6. If the result is `import_failed` with `bulk_listing_file_rejected`, Depop refused the whole file
-   and created nothing; nothing was recorded in Fold. Report Depop's own message from
-   `upload_confirmation.message`, treat it as a defect in the exported file, and do not retry the
-   upload or edit the bytes yourself.
-7. If the result is `import_rejected` with `bulk_listing_file_has_row_errors`, Depop validated the
-   file and refused it as a whole. **Nothing was imported — not even the rows with no errors.**
-   Report `platform_row_errors` per row and field with Depop's messages verbatim, and do not
-   rewrite or normalize its field labels: `Brand` and `Field_name.picture_Hero_url` are both Depop's
-   own wording, and the seller needs to see which field to fix. Rows with `status: 'rejected'` have
-   fields to fix; rows with `status: 'rejected_with_file'` were fine but went down with the
-   file. The user's next action is to fix the flagged rows and re-upload the whole file. If
-   `platform_row_errors_unmapped` is true, say that some errors could not be attributed to a
-   specific listing rather than guessing at which. If `row_errors_malformed` is true, say the error
-   list could not be read and point the user at the page itself.
-   Before re-uploading a corrected file, drop any row this run reported in `imported` — a
-   re-upload of a row that already imported creates a duplicate draft, which Depop's own page warns
-   about. Tell the user to glance at their drafts list too: the single check this run makes is one
-   look, not a guarantee.
-8. If the result is `import_failed` with `bulk_listing_platform_error`, Depop accepted the file's
-    fields and then failed while processing it. Nothing was imported and there is no per-row detail
-    to report. `retry_suggested` is `true` on this outcome and no other, so tell the user a retry is
-    reasonable here — but **ask them; never re-upload on your own.** A generic error gives no way to
-    know whether anything landed, and re-uploading duplicates whatever did. Have them check their
-    drafts list first, and drop any row this run reported in `imported`.
-9. Check `upload_confirmation.accepted`. `true` means Depop confirmed it accepted the file — which
-   is not a promise that every row became a draft. `null` means the page showed no recognizable
-   upload notice (`notice` is `missing` or `unrecognized`): report that as a likely Depop UI change
-   worth flagging, then read the rest of the result normally, because per-row correlation is what
-   establishes each outcome either way. Do not re-upload on a `null`.
-10. The workflow reads all three draft views — Incomplete, Ready-to-post and Scheduled — by opening
-   each one's own URL. A row that lands under Incomplete drafts is a **successful** import, not a
-   failure — never report it as one. (Do not explain *why* a draft landed there: the
-   missing-package-size explanation comes from Depop Import's documentation, which is a different
-   Depop product and does not describe this path.)
-11. For every entry in the result's `imported` array, call `mark_published` once with that entry's
-   exact `listing_id` and its own `listing_url`. One URL per listing. Never reuse one URL across
-   listings, and never send a drafts-hub or bulk-listing URL to Fold.
-12. Report every entry in `unresolved` by its `status`, and describe each one accurately:
-    - `pending_at_timeout` — no draft with that SKU has appeared. Depop may still be processing it,
-      **or Depop may have silently rejected that row during processing** — an accepted file does not
-      mean every row becomes a draft, and Depop shows no per-row error and no signal that processing
-      has finished. You cannot tell those apart, so say exactly that: the listing has not appeared,
-      it was not recorded, and it is unresolved rather than failed. Tell the user Depop emails them
-      when an import finishes, and that the email or a look at their own drafts list is what settles
-      it. Do not call `mark_published` for it, do not guess a URL, do not speculate about a cause
-      from the listing's own data, and **do not re-upload the file** — a second upload creates
-      duplicate drafts.
-    - `ambiguous` — two imported drafts carry that SKU. Report it and let the user resolve it; never
-      pick one.
-    - `not_imported` — the file itself was rejected, so nothing was created.
-13. Never target Post, Publish, List, Make live, Ready to post, or any equivalent. This capability
-    clicks nothing at all — it reaches every draft view by URL and refuses every action it is asked
-    to take, including Depop's own Post control on the Ready-to-post view. The user posts the drafts
-    inside Depop.
-14. Report the row count, each recorded listing, each unresolved row with its status and what it
-    means, whether the export was truncated, and that Depop emails the seller when the import
-    finishes. **Also report every entry in the export tool's own `blanked_cells`, if any are
-    present** — each names a `listing_id`, `field`, and `column` where Fold held a value the seller
-    typed but withheld it from the file because it did not match the marketplace's own accepted
-    list for that field (for example, a brand or category spelled differently than the marketplace
-    captured it). This is not a failure to fold into the row-outcome report above: the row still
-    imports, just missing that one fact — so tell the user which listing, which field, and what
-    value Fold could not send, so they can fix it themselves either in Fold or directly on the
-    marketplace. Silently omitting this is how a seller ends up manually reconstructing a dropped
-    field on the marketplace's own site without ever learning Fold already knew about the gap.
+### Codex app (in-app Browser)
+
+In the Codex app Fold's tools and the browser live in **different runtimes**: Fold's MCP tools are
+callable only from `exec` (`tools.mcp__fold__*`), the browser `cua` only from the `cua_repl` `js`
+tool, and neither can call the other. So `postDrafts` runs in `js` with the file relay
+`createFoldToolBridge`, and `exec` answers the Fold calls it parks. Copy these blocks; do not
+hand-wire the internals.
+
+**Module cache.** `cua_repl` keeps imported modules cached by path for the life of its kernel. Import
+from the installed version's folder — `~/.codex/plugins/cache/vanta/fold/<installed version>/`, read
+the version from the installed plugin, never hard-code an older one — or restart the kernel after an
+update.
+
+1. **`js` (cua_repl) — start the run.** Use `var` so the handles survive between calls.
+
+   ```js
+   var root = '<installed plugin root>'
+   var { postDrafts, createFoldToolBridge } = await import(`${root}/workflows/post-drafts.mjs`)
+   var browserId = '<browser id of the open marketplace tab>'
+   var tab = await cua.getTab('<that tab id>', { browser: browserId })
+   var bridge = createFoldToolBridge({
+     directory: `/tmp/fold-bridge-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+   })
+   var postArgs = {
+     marketplace: 'depop', // or 'vinted'
+     callTool: bridge.callTool,
+     memberId: '<Vinted only: the number in https://www.vinted.com/member/{id}>',
+     browser: {
+       provider: 'codex-browser-client',
+       tab,
+       reacquireTab: async (id) => (tab = await cua.getTab(id, { browser: browserId })),
+       releaseTab: async (id, replacementId) => {
+         if (id !== replacementId) await (await cua.getTab(id, { browser: browserId })).close()
+       },
+       openFreshTab: async (url) => (tab = await cua.createBrowserTab(browserId, url, { visible: true })),
+     },
+   }
+   var step = await bridge.start(postDrafts(postArgs))
+   step
+   ```
+
+2. **`exec` — answer the parked Fold calls** whenever `step.next` is `'call_fold'`. Paste
+   `step.requests_path` in place of the placeholder:
+
+   ```js
+   const sh = (cmd) => tools.exec_command({ cmd, max_output_tokens: 20000 })
+   const req = JSON.parse((await sh(`cat '<step.requests_path>'`)).output)
+   const answers = {}
+   for (const call of req.calls) {
+     try {
+       answers[call.id] = await tools[`mcp__fold__${call.name}`](call.args)
+     } catch (error) {
+       answers[call.id] = { isError: true, content: [{ type: 'text', text: String(error?.message ?? error) }] }
+     }
+   }
+   const quote = (value) => String(value).replaceAll("'", "'\\''")
+   const json = JSON.stringify(answers)
+   const chunks = json.match(/[\s\S]{1,16384}/g) ?? ['']
+   const partial = `${req.response_path}.part`
+   for (const [index, chunk] of chunks.entries()) {
+     const redirect = index === 0 ? '>' : '>>'
+     const prefix = index === 0 ? 'umask 077; ' : ''
+     await sh(`${prefix}printf '%s' '${quote(chunk)}' ${redirect} '${partial}'`)
+   }
+   await sh(`mv '${partial}' '${req.response_path}'`)
+   text(req.calls.map((call) => call.name))
+   ```
+
+3. **`js` — hand the answers back:** `step = await bridge.deliver(); step`. If `step.next` is
+   `'working'` the run is still busy in the browser (uploads and draft polling take time): call
+   `step = await bridge.step(); step`. Repeat 2–3 until `step.next` is `'finished'`; the report is
+   `step.report` (`'error'` carries the thrown message). For Vinted, while `step.report.next` is
+   `'continue'` or `'confirm'`, start the next step with
+   `step = await bridge.start(postDrafts({ ...postArgs, resumeFrom: step.report.report_path })); step`.
+
+A Depop run is typically: start → export → deliver → (working) → report + record → finished. If your
+host lets one runtime call both Fold and the browser, skip the bridge and pass
+`callTool: (name, args) => tools[`mcp__fold__${name}`](args)` directly. If no runtime can write the
+relay files, stop and tell the user; do not fall back to hand-wiring the workflow modules.
+
+### Claude in Chrome with a live bridge
+
+`postDrafts({ marketplace, callTool: <your Fold caller>, browser: { provider: 'claude-in-chrome',
+callTool: <your mcp__claude-in-chrome__* bridge>, tabId }, memberId })` — the browser's `callTool` is
+nested inside `browser` so it never collides with Fold's.
+
+### Report
+
+Say plainly what `report.summary_text` says, then each entry of `report.listings` by `outcome`:
+
+- `recorded` — draft created and recorded in Fold (`reconciled: true`: it came from an earlier
+  run's upload and was matched by SKU now).
+- `pending` (Depop) — no draft with that SKU has appeared. Depop may still be processing it, **or
+  may have silently rejected that row** — nothing on the page tells those apart, so say exactly that:
+  not appeared, not recorded, unresolved rather than failed. Depop emails the seller when an import
+  finishes. Never re-upload to chase it. `pending` (Vinted) — still queued for a later call.
+- `awaiting_confirmation` (Depop) — an earlier run delivered this row but its draft has not been
+  found yet; Fold keeps it held and the next run looks again.
+- `ambiguous` — two drafts carry the SKU, or a Vinted save could not be confirmed. The seller
+  decides; never pick one or retry.
+- `not_imported` (Depop) — nothing was created for it; give `failure_code`, `reason`, and any
+  `platform_errors` verbatim (Depop's own field labels, e.g. `Brand`,
+  `Field_name.picture_Hero_url`). A rejected file is a defect in the export, not something to patch.
+  `bulk_listing_platform_error` is the only case where a retry is reasonable — ask the user, never
+  retry yourself.
+- `draft_unrecorded` — the draft exists (`listing_url`) but Fold did not record it; a later run with
+  the same report records it, never re-drafts it.
+- Vinted: `rejected` (refused before browser use — Fold could not supply Vinted's ids; nothing was
+  guessed), `failed` (refused on the form before saving; `failure_code` names the field), `blocked`
+  with `vinted_phone_verification_required` (the seller verifies a phone number on Vinted, then
+  reruns; never try to get past that page), `needs_manual_check` (a call died mid-save; check the
+  Vinted drafts), `awaiting_save_confirmation` (the next call looks for it in the wardrobe),
+  `existing_draft` (a draft with this title is already in the wardrobe, `candidates`; once the seller
+  confirms it is this listing, `acceptExistingDraft(report.draft_batch, listing_id, url)` from
+  `workflows/draft-batch.mjs`, persist it to `report.report_path`, and the next call records it).
+- `authenticity_hint` on a Vinted item: Vinted wants proof-of-authenticity photos for that brand or
+  may hide the listing; adding them is the seller's call. `brand_id_fallback`: Vinted did not offer
+  Fold's brand id, so the brand was chosen by name (`name_match`) or entered as a custom brand.
+
+Also report, for Depop: `report.export.truncated` (a capped export is never the complete set),
+every `report.export.blanked_cells` entry (a value Fold withheld because it did not match Depop's
+list for that field — tell the seller which listing, field and value so they can fix it), and
+`report.upload_report.outcome`. Fold leases what it exports for 30 minutes: a run that failed before
+delivering the file has already released the hold (`report_csv_upload` with `uploaded: false`); a
+delivered file keeps its rows held until a later run matches their drafts by SKU, which `postDrafts`
+does automatically. `report.other_marketplace_listings` are ready listings for other marketplaces —
+offer to post those separately; they are not failures. `report.fold_errors` lists Fold calls that
+failed; they are never retried.
+
+Never target Post, Publish, List, Make live, Ready to post or Vinted's **Upload** (it publishes). The
+capabilities refuse every live control and press only Depop's file upload or Vinted's Save draft.
+The seller posts drafts inside the marketplace.
 
 ## Bulk listing without a live code-execution bridge (native browser tools)
 
-Use this instead of steps 5, 10, and 13 above when you have no way to run `importCsvBatch` with a
-live `callTool` bridge (see **Know the capability boundary**) — for example, a Bash/Node/Bun tool
-that can execute this repository's files but cannot itself call your browser MCP tools mid-script.
-Steps 1–4 (export the CSV, handle its three outcomes, write the bytes untouched, state the plan) and
-6–9, 11–12, 14 above are unchanged — this section only replaces how the browser part happens.
+Use this only when you cannot run `postDrafts` against a live browser transport (see **Know the
+capability boundary**) — for example, a Bash/Node/Bun tool that can execute this repository's files
+but cannot itself call your browser MCP tools mid-script. You then do by hand, in this order, what
+`postDrafts` does; the outcome meanings in **Post drafts → Report** are unchanged.
+
+**Order matters: prove the page before exporting.** Fold leases the rows it exports for 30 minutes.
+Exporting onto a page that then fails leaves listings held with nothing uploaded.
+
+1. Open and inspect the bulk page (steps A–B below) **before** calling `export_depop_csv`.
+2. Call `export_depop_csv`. A refusal (`isError`) is shown to the seller verbatim; an empty export is
+   normal. Note `submission_id`. Write `csv` **byte for byte** to a `.csv` file — never add, strip
+   or reorder anything, including the three template header lines.
+3. If `awaiting_confirmation` has rows with `delivered: true`, an earlier upload was never matched:
+   look for each one's `sku` in the draft views (step E) and `mark_published` the ones that match
+   exactly one draft. Leave `delivered: false` rows alone — another export holds them.
+4. Deliver the file (step C) and read the alert (step D).
+5. Call `report_csv_upload({ submission_id, uploaded, note })` **exactly once** (skip it if
+   `submission_id` is null): `uploaded: false` with a short `note` if the file was never delivered
+   (any failure after the export and before delivery) or Depop refused it (bad headers, row
+   errors); `uploaded: true` once it was delivered and accepted — and also when delivered but the
+   outcome is unknown (generic error, no alert), because a duplicate draft is worse than a held one.
+6. Correlate and record (step E).
 
 **This fallback requires the Claude in Chrome browser extension as the browser surface** — the same
 `claude-in-chrome` transport named in **Know the capability boundary** above, just driven by your own
@@ -287,12 +311,14 @@ Navigate there directly. Do not search Drafts, "How to list on web," or any othe
 if that URL 404s or looks wrong, stop and report it rather than exploring for an alternative; Depop
 moving this page is a real, reportable defect, not something to route around by guessing.
 
-1. Navigate to `https://www.depop.com/sellinghub/bulklisting/`.
-2. Read the page's accessibility tree (not a screenshot). Confirm exactly one button with the exact
-   accessible name "Upload file" exists, and exactly one file-input-role element exists. Locate both;
+A. Navigate to `https://www.depop.com/sellinghub/bulklisting/`.
+B. Read the page's accessibility tree (not a screenshot). The main panel hydrates slowly: if
+   "Upload file" is not there yet, re-read a few times over about 20 seconds before concluding the
+   page is broken. Confirm exactly one button
+   with the exact accessible name "Upload file" exists, and exactly one file-input-role element exists. Locate both;
    activate neither. Clicking the visible trigger opens an OS file dialog you cannot see or drive —
    the file input must be addressed directly by its own element reference instead.
-3. Before touching the file input, confirm you are on a genuine Claude in Chrome tab (see above) and
+C. Before touching the file input, confirm you are on a genuine Claude in Chrome tab (see above) and
    check your own available tools for the one built for this exact purpose — in the
    `mcp__claude-in-chrome__*` namespace this is `file_upload`, which sets a file on an element by its
    `tabId` and `ref` without opening an OS dialog; your host's equivalent will be named and documented
@@ -321,7 +347,7 @@ moving this page is a real, reportable defect, not something to route around by 
    entire reason the visible trigger is never clicked: an OS file dialog neither of you can see or
    drive, or an unreviewed write straight to a real marketplace's API, are both worse outcomes than a
    stopped run with a clear error to report.
-4. Read the page again. Look for a `role="alert"` element next to the file input. Its text is the
+D. Read the page again. Look for a `role="alert"` element next to the file input. Its text is the
    only signal Depop gives:
    - substring-matches `"Upload successful! We're creating drafts from your file now"` → accepted;
    - a single short line like `"CSV headers don't match. Are you using the correct template?"` →
@@ -334,7 +360,7 @@ moving this page is a real, reportable defect, not something to route around by 
      through to per-SKU polling below rather than guessing which outcome occurred.
    Match by substring against each observed string, never equality against the whole alert's
    concatenated text — the success alert has two text nodes concatenated together.
-5. On accepted (or unconfirmed), poll for per-row outcomes by opening each of Depop's three draft
+E. On accepted (or unconfirmed), poll for per-row outcomes by opening each of Depop's three draft
    views by its own URL — never by clicking a tab toggle, since a redirect could otherwise pass as
    coverage:
    - `https://www.depop.com/sellinghub/drafts/incomplete/`
@@ -344,7 +370,8 @@ moving this page is a real, reportable defect, not something to route around by 
    draft rows across all three views for that SKU, read that draft's own stable edit URL, and record
    the pairing. Poll on a bounded interval (Depop imports asynchronously and emails when finished) up
    to a reasonable timeout before reporting the remainder as `pending_at_timeout`, matching the
-   outcome semantics in step 12 above. A row under Incomplete is a successful import, not a failure.
+   outcome semantics in **Post drafts → Report**. Draft views can show `Loading…` for a few
+   seconds; wait for it to clear before reading a view as empty. A row under Incomplete is a successful import, not a failure.
 
    The moment a SKU pairs to exactly one stable draft URL — a **confirmed** outcome — call
    `mark_published` once with that listing's exact `listing_id` and that URL as `listing_url`,
@@ -354,161 +381,9 @@ moving this page is a real, reportable defect, not something to route around by 
    itself fails, report that to the seller but do not fail or retry the import over it — this is
    best-effort enrichment of Fold's `external_url`, not a required step, and every other outcome in
    this section is reported exactly as it would be without it.
-6. Never target Post, Publish, List, Make live, Ready to post, or any equivalent — including Depop's
+F. Never target Post, Publish, List, Make live, Ready to post, or any equivalent — including Depop's
    own Post control that sits on the Ready-to-post view you just opened to read SKUs. Reading that
    view is not permission to act on it.
-
-## Copy greenlit listings to Vinted drafts
-
-Vinted (US) has no bulk or CSV import and no public listing API, so each ready Vinted listing gets
-its own private draft, one per code call. Fold's `marketplace_fields` already carries Vinted's own
-ids (category, brand, size, condition, colors, materials, package size, category-specific lists
-such as skirt length); the adapter maps those ids onto the form and never infers one from the
-title or description. Use `createAuthenticatedVintedTargetProfile()` only when the user asks to use
-their logged-in vinted.com tab.
-
-Greenlighting in Fold is the seller's approval. State the plan once — how many listings, each a
-private Vinted draft, never posted — then act without a runtime confirmation.
-
-### Host recipe (copy it; do not improvise the wiring)
-
-Every module below is plain `.mjs` and loads with a dynamic `import()` from the installed plugin
-root — the folder holding this skill's `skills/` directory. Keep the handles in your REPL's
-persistent state between calls.
-
-**Module cache.** Codex's `node_repl` keeps every imported module cached by its path for the life
-of its kernel. After a plugin update, import from the newly installed version's folder (for Codex,
-`~/.codex/plugins/cache/vanta/fold/<installed version>/`) — read the version from the installed
-plugin, never hard-code an older one — or a stale copy keeps running. Reinstalling the same version
-into the same folder does not reload anything: bump the version or restart the kernel.
-
-**Step 0 — once per session, in the browser-capable JS REPL.** Pick the transport:
-
-```js
-const root = '<installed plugin root>'
-const { createVintedBrowserCapabilityForProvider } = await import(`${root}/adapters/vinted/provider-capabilities.mjs`)
-const { createAuthenticatedVintedTargetProfile } = await import(`${root}/adapters/vinted/profile.mjs`)
-const { createVintedAdapter } = await import(`${root}/adapters/vinted/adapter.mjs`)
-const { runDraftBatch, recordDraftResult, acceptExistingDraft } = await import(`${root}/workflows/draft-batch.mjs`)
-const { createPhotoFileResolver } = await import(`${root}/workflows/photo-files.mjs`)
-const fs = await import('node:fs/promises')
-
-const profile = createAuthenticatedVintedTargetProfile()
-// The seller's Vinted member id: the number in their wardrobe URL, https://www.vinted.com/member/{id}
-// (where Save draft lands; also reachable from the avatar menu's profile link). Required: before
-// each draft the adapter checks that wardrobe for an existing draft with the same title.
-const memberId = '<seller member id>'
-// Photos: the capability calls resolvePhotoFiles([{ sourceUrl, filename, order }]) and needs one
-// ABSOLUTE local path per photo, same order, basename === filename. This resolver downloads Fold's
-// signed URLs into a fresh folder for you. Use any absolute folder the browser can read.
-const resolvePhotoFiles = createPhotoFileResolver({ directory: '/tmp/fold-vinted-photos' })
-// One report file per run: a new run starts from a path that does not exist yet.
-const reportPath = `/tmp/fold-vinted-report-${Date.now()}.json`
-const persist = (report) => fs.writeFile(reportPath, JSON.stringify(report))
-```
-
-- **Codex desktop / Codex in-app Browser** (provider `codex-browser-client`). Bind a vinted.com
-  tab, rebind that same tab id after navigation, and let each draft open in a fresh tab of the same
-  browser (`openFreshTab`): a half-filled form left by a failed attempt makes Vinted refuse to
-  navigate that tab (`net::ERR_ABORTED`), and the fresh tab leaves it behind, unsaved, to be closed:
-
-  ```js
-  const browserId = '<the selected browser id, e.g. "2" for the in-app browser>'
-  let tab = await cua.getTab({ url: 'https://www.vinted.com/items/new' }, { browser: browserId })
-  const browser = await createVintedBrowserCapabilityForProvider({
-    provider: 'codex-browser-client',
-    tab,
-    profile,
-    memberId,
-    resolvePhotoFiles,
-    reacquireTab: async (id) => (tab = await cua.getTab(id, { browser: browserId })),
-    openFreshTab: async (url) => (tab = await cua.createBrowserTab(browserId, url, { visible: true })),
-    releaseTab: async (id) => (await cua.getTab(id, { browser: browserId })).close(),
-  })
-  const adapter = createVintedAdapter({ browser, profile })
-  ```
-
-  Photos reach the page only through the file-chooser flow (`tab.playwright.waitForEvent
-  ('filechooser')`, a click on the photo control, `chooser.setFiles([...absolute paths])`); the
-  installed driver already does exactly that. Never look for `setInputFiles`.
-- **Claude in Chrome with a live bridge** (provider `claude-in-chrome`): replace the capability
-  options with `{ provider: 'claude-in-chrome', callTool, tabId, profile, resolvePhotoFiles }`, where
-  `callTool(name, args)` forwards one `mcp__claude-in-chrome__*` call from inside the running code.
-  Without such a bridge there is no qualified Vinted path: stop and tell the user rather than
-  driving the form by hand.
-
-**Step 1 — fetch the ready set through the Fold connector** (your Fold MCP tool, outside the
-browser REPL if that is where it lives), and hand the result's structured content to the REPL:
-
-```js
-const readyListings = /* the list_ready_listings result: { listings, count } */
-```
-
-**Step 2 — one draft per call.** Each call does at most one form transaction, sized to fit a
-host's per-call time limit:
-
-```js
-let report = await fs.readFile(reportPath, 'utf8').then(JSON.parse).catch(() => undefined)
-report = await runDraftBatch({ adapter, readyListings, resumeFrom: report, persist })
-report  // show: report.next, report.to_record, the last item
-```
-
-**Step 3 — record through the Fold connector.** For every `{ listing_id, listing_url }` in
-`report.to_record`, call Fold's `mark_published` with exactly those two values, then fold the answer
-back in and persist it:
-
-```js
-report = recordDraftResult(report, listing_id, markPublishedResult) // or the error it threw
-await persist(report)
-```
-
-**Step 4 — repeat** Step 2 (and 3) while `report.next` is `'continue'` or `'confirm'`. Stop on
-`'done'` or `'stop'`. `'record'` means Step 3 is still owed; nothing new is drafted until it is
-done. `'confirm'` means a Save draft from an earlier call has not shown up in the wardrobe yet: the
-next Step 2 call looks for it there (it never saves again) before drafting anything else. That
-read-only look also runs while other items are still `'record'`ing or the run has `'stop'`ped, so
-a pressed save is always resolved; it never creates a draft.
-
-The workflow never calls Fold itself. The persisted report is what prevents duplicates: a listing
-it has reached is never drafted again, and a call that dies mid-transaction (a timeout that resets
-the REPL) leaves that listing `needs_manual_check` because Save draft may already have been pressed.
-Resume only the report of the run in progress. A report from an earlier run or plugin version is
-refused (`resumeFrom is not a fold-draft-batch/2 report`) — start a fresh run on a new report path
-instead; never edit an old report to make it pass. Each call attempts at most one listing, even
-when that listing fails fast, so a run of N listings takes N calls plus its recordings.
-
-### Report
-
-Report every entry in `report.items` by `outcome`:
-
-- `recorded` — draft created, verified, and recorded in Fold.
-- `rejected` — refused before any browser use; give the `reason`. A reason about a missing field
-  projection means Fold could not supply Vinted's ids for that listing; nothing was guessed.
-- `failed` — refused on the form before anything was saved; give `failure_code` (it names the
-  field) and `reason` (it carries the underlying cause). The run continued.
-- `blocked` with `vinted_phone_verification_required` — Vinted sent the account to phone
-  verification. Tell the seller to add and verify a phone number on Vinted, then rerun. Never try to
-  get past that page.
-- `ambiguous` or `needs_manual_check` — a draft may exist. Tell the seller to check their Vinted
-  drafts. Never retry it yourself.
-- `draft_unrecorded` — the draft exists (`draft_url`) but Fold did not record it; it stays in
-  `to_record`.
-- `awaiting_save_confirmation` — Save draft was pressed but Vinted had not shown the draft within
-  the call; the next call looks for it in the wardrobe. After three looks without it, it becomes
-  `ambiguous`.
-- `existing_draft` — a draft with this exact title is already in the seller's wardrobe
-  (`candidates`), so nothing was created; the run continued. Typically an earlier run saved it but
-  never recorded it. Show the seller the URL; once they confirm it is this listing, call
-  `report = acceptExistingDraft(report, listing_id, url)` (loaded from `workflows/draft-batch.mjs`)
-  and record it in Step 3 like any other draft. Never create a second draft for it.
-
-When an item carries `authenticity_hint`, tell the seller: Vinted wants proof-of-authenticity
-photos (logo, care label, sewn or embroidered logos) for that brand, or may hide the listing. The
-adapter closes Vinted's authenticity dialog with its own Close button and never clicks "Add photos"
-or "which proofs of authenticity are essential" — adding those photos is the seller's call.
-
-Never target Vinted's **Upload** button — it publishes. The capability refuses it on every click
-and presses only **Save draft**. The seller posts drafts inside Vinted.
 
 ## Show greenlit listings
 

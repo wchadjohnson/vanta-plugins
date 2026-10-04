@@ -141,6 +141,11 @@ export async function createDepopBulkListingCapabilityForProvider(options = {}) 
     beforeBulkWrite: ensureBulkSurface,
     interactionDelayMs: options.interactionDelayMs,
     snapshotPollMs: options.snapshotPollMs,
+    draftViewSettleMs: options.draftViewSettleMs,
+    importPollMs: options.importPollMs,
+    importTimeoutMs: options.importTimeoutMs,
+    surfacePollMs: options.surfacePollMs,
+    surfaceTimeoutMs: options.surfaceTimeoutMs,
   })
   return withBulkListingProbe(capability, ensureBulkSurface)
 }

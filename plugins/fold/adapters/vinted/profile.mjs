@@ -131,6 +131,7 @@ export const VINTED_CONDITIONS = Object.freeze({
 export const VINTED_FIXED_FIELDS = Object.freeze([
   'category',
   'brand',
+  'brand_id',
   'size',
   'condition',
   'color',

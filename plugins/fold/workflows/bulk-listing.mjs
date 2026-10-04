@@ -88,6 +88,47 @@ function batchError(code, message) {
   return error
 }
 
+function nullableString(value) {
+  return nonEmptyString(value) ? value : null
+}
+
+function normalizedAwaitingConfirmation(entries) {
+  const awaiting = []
+  let malformed = 0
+  if (!Array.isArray(entries)) return { awaiting, malformed_count: 0 }
+  for (const entry of entries) {
+    if (
+      entry !== null &&
+      typeof entry === 'object' &&
+      !Array.isArray(entry) &&
+      nonEmptyString(entry.listing_id) &&
+      nonEmptyString(entry.sku) &&
+      typeof entry.delivered === 'boolean'
+    ) {
+      awaiting.push({
+        listing_id: entry.listing_id,
+        sku: entry.sku,
+        delivered: entry.delivered,
+        submitted_at: nonEmptyString(entry.submitted_at) ? entry.submitted_at : null,
+      })
+    } else {
+      malformed += 1
+    }
+  }
+  return { awaiting, malformed_count: malformed }
+}
+
+/** The lease fields Fold's export carries (vanta-fold#367), validated; malformed rows are counted, not trusted. */
+export function normalizedExportLease(payload = {}) {
+  const normalized = normalizedAwaitingConfirmation(payload.awaiting_confirmation)
+  return {
+    submission_id: nullableString(payload.submission_id),
+    lease_expires_at: nullableString(payload.lease_expires_at),
+    awaiting_confirmation: normalized.awaiting,
+    awaiting_confirmation_malformed_count: normalized.malformed_count,
+  }
+}
+
 /**
  * Checks everything that can be known before a byte leaves the host. Correlation soundness rests on
  * SKU uniqueness inside one file, which holds because each exported file covers one marketplace.
@@ -153,6 +194,29 @@ function assertCapability(capability) {
   return capability
 }
 
+/**
+ * Proves the bulk-listing page usable before anything is exported. Fold leases rows the moment it
+ * exports them, so exporting before the page is usable can leave a listing held with nothing
+ * uploaded. Browser failures come back as `surface_unavailable` with their stable code; only
+ * programmer misuse throws.
+ */
+export async function prepareBulkListingSurface({ capability } = {}) {
+  assertCapability(capability)
+  try {
+    await capability.navigate()
+    const surface = await capability.inspectBulkListingSurface()
+    return { outcome: 'surface_ready', surface }
+  } catch (error) {
+    if (error instanceof TypeError) throw error
+    return {
+      outcome: 'surface_unavailable',
+      failure_code: typeof error?.code === 'string' ? error.code : 'bulk_listing_surface_unavailable',
+      reason: error instanceof Error ? error.message : String(error),
+      browser_metrics: capability.metrics?.() ?? null,
+    }
+  }
+}
+
 function failure(batch, error, extra = {}) {
   return {
     outcome: 'import_failed',
@@ -200,6 +264,142 @@ async function correlateBySku(capability, before, wantedSkus, now) {
   }
 
   return { urlsBySku, ambiguousSkus, newDraftCount: readUrls.size, pendingViews, rounds }
+}
+
+const RECONCILE_UNMATCHED_REASON =
+  'no draft with this SKU was found inside the reconciliation read budget'
+
+function awaitingRows(entries) {
+  return Array.isArray(entries)
+    ? entries.filter(
+      (entry) =>
+        entry !== null &&
+        typeof entry === 'object' &&
+        nonEmptyString(entry.listing_id) &&
+        nonEmptyString(entry.sku) &&
+        typeof entry.delivered === 'boolean'
+    )
+    : []
+}
+
+/**
+ * Next-run reconciliation for rows an earlier courier delivered but never matched to a draft
+ * (`awaiting_confirmation` entries with `delivered: true` on Fold's export). Each is looked for by
+ * SKU across every draft view, with the same rules as `importCsvBatch`'s correlation: one URL per
+ * SKU, two drafts carrying one SKU is ambiguous, nothing is ever guessed. Rows still leased and
+ * undelivered (`delivered: false`) belong to an export in flight and are never touched.
+ *
+ * Bounded by `maxDraftReads` page-opens. `knownUrls` (url -> sku) lets drafts this run already read
+ * count without being reopened. Browser errors never throw: what was matched before the error is
+ * still returned, with `outcome: 'reconcile_failed'`.
+ */
+export async function reconcileDeliveredRows({
+  capability,
+  awaiting,
+  maxDraftReads = 60,
+  knownUrls = new Map(),
+} = {}) {
+  assertCapability(capability)
+  if (!Number.isInteger(maxDraftReads) || maxDraftReads < 0) {
+    throw new TypeError('maxDraftReads must be a non-negative integer')
+  }
+  if (!(knownUrls instanceof Map)) throw new TypeError('knownUrls must be a Map')
+  const rows = awaitingRows(awaiting)
+  const wanted = new Map(rows.filter((row) => row.delivered).map((row) => [row.sku, row]))
+  const urlsBySku = new Map()
+  const ambiguousSkus = new Set()
+  const readUrls = new Set()
+  const pendingViews = new Set()
+  let draftReads = 0
+  let failure = null
+
+  function remember(url, sku) {
+    if (!wanted.has(sku)) return
+    if (urlsBySku.has(sku) && urlsBySku.get(sku) !== url) ambiguousSkus.add(sku)
+    else urlsBySku.set(sku, url)
+  }
+
+  if (wanted.size > 0) {
+    try {
+      // One snapshot pass, then one more only if it surfaced a URL not yet read: a draft list does
+      // not change while it is being read, so a third pass would only spend the budget.
+      for (;;) {
+        const snapshot = await capability.snapshotDraftUrls()
+        for (const view of snapshot.pending_views ?? []) pendingViews.add(view)
+        let sawNewUrl = false
+        for (const url of snapshot.urls ?? []) {
+          if (knownUrls.has(url)) {
+            remember(url, knownUrls.get(url))
+            continue
+          }
+          if (readUrls.has(url) || draftReads >= maxDraftReads) continue
+          sawNewUrl = true
+          readUrls.add(url)
+          draftReads += 1
+          const observed = await capability.readDraftSku(url)
+          if (nonEmptyString(observed?.sku)) {
+            remember(nonEmptyString(observed.listing_url) ? observed.listing_url : url, observed.sku)
+          }
+        }
+        const settled = [...wanted.keys()].every((sku) => urlsBySku.has(sku))
+        if (settled || draftReads >= maxDraftReads || !sawNewUrl) break
+      }
+    } catch (error) {
+      failure = {
+        failure_code: typeof error?.code === 'string' ? error.code : 'bulk_listing_reconcile_failed',
+        reason: error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  const matched = []
+  const ambiguous = []
+  const unmatched = []
+  for (const row of wanted.values()) {
+    if (ambiguousSkus.has(row.sku)) ambiguous.push({ listing_id: row.listing_id, sku: row.sku })
+    else if (urlsBySku.has(row.sku)) {
+      matched.push({ listing_id: row.listing_id, sku: row.sku, listing_url: urlsBySku.get(row.sku) })
+    } else {
+      unmatched.push({ listing_id: row.listing_id, sku: row.sku, reason: RECONCILE_UNMATCHED_REASON })
+    }
+  }
+  return {
+    outcome: failure === null ? 'reconciled' : 'reconcile_failed',
+    matched,
+    ambiguous,
+    unmatched,
+    held_undelivered: rows
+      .filter((row) => !row.delivered)
+      .map((row) => ({ listing_id: row.listing_id, sku: row.sku })),
+    draft_reads: draftReads,
+    pending_views: [...pendingViews],
+    ...(failure ?? {}),
+  }
+}
+
+/**
+ * What to tell Fold's `report_csv_upload` about one `importCsvBatch` result. `uploaded: false`
+ * releases the export's lease so the rows are offered again; `uploaded: true` keeps them held
+ * awaiting confirmation until a later run matches their drafts.
+ *
+ * Definitive refusals (bad headers, row errors) are `false`. Accepted uploads are `true`. For any
+ * other outcome, an upload attempt or confirmed upload in browser metrics is treated as delivered:
+ * the driver may have handed the file to the page before a timeout, tab detach, or other exception.
+ * Unknown delivery keeps the lease held because duplicate drafts are worse than a listing awaiting
+ * confirmation. Only failures with no delivery attempt release the lease, with the failure code as
+ * the note.
+ */
+export function uploadOutcomeForReport(importResult) {
+  const notice = importResult?.upload_confirmation?.notice
+  const failureCode = typeof importResult?.failure_code === 'string' ? importResult.failure_code : null
+  if (notice === 'rejected') return { uploaded: false, note: 'bulk_listing_file_rejected' }
+  if (notice === 'errors_found') return { uploaded: false, note: 'bulk_listing_file_has_row_errors' }
+  if (notice === 'accepted') return { uploaded: true, note: null }
+  const attempts = importResult?.browser_metrics?.upload_attempts
+  if (Number.isInteger(attempts) && attempts > 0) return { uploaded: true, note: null }
+  const uploads = importResult?.browser_metrics?.uploads
+  if (Number.isInteger(uploads) && uploads > 0) return { uploaded: true, note: null }
+  return { uploaded: false, note: failureCode ?? 'bulk_listing_upload_not_delivered' }
 }
 
 /**
@@ -509,6 +709,7 @@ export async function exportDepopCsvBatch({ fold, materializeCsv, marketplace = 
       outcome: 'export_refused',
       marketplace,
       reason: toolText(response) ?? 'Fold refused the export and gave no reason',
+      ...normalizedExportLease(),
     }
   }
   const payload = assertObject(
@@ -516,6 +717,7 @@ export async function exportDepopCsvBatch({ fold, materializeCsv, marketplace = 
     'export_depop_csv structured content'
   )
 
+  const lease = normalizedExportLease(payload)
   const listings = Array.isArray(payload.listings) ? payload.listings : []
   const includedCount = Number.isInteger(payload.included_count)
     ? payload.included_count
@@ -526,6 +728,7 @@ export async function exportDepopCsvBatch({ fold, materializeCsv, marketplace = 
       marketplace,
       included_count: 0,
       message: toolText(response) ?? payload.message ?? null,
+      ...lease,
     }
   }
 
@@ -550,7 +753,11 @@ export async function exportDepopCsvBatch({ fold, materializeCsv, marketplace = 
   }
   validateCsvImportBatch(batch)
 
+  // Both keys carry the same untouched string: a live agent wrote its callback against `csv` while
+  // this passed `bytes`, and the file it wrote was empty. Tolerating either name is cheaper than
+  // another failed upload, and nothing here reads or changes the bytes.
   const csvPath = await materializeCsv({
+    csv: payload.csv,
     bytes: payload.csv,
     filename: nonEmptyString(payload.filename) ? payload.filename : 'depop-bulk-listing.csv',
   })
@@ -568,6 +775,7 @@ export async function exportDepopCsvBatch({ fold, materializeCsv, marketplace = 
     max_listings: batch.max_listings,
     blanked_cells: Array.isArray(payload.blanked_cells) ? payload.blanked_cells : [],
     message: toolText(response) ?? payload.message ?? null,
+    ...lease,
   }
 }
 

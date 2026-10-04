@@ -28,6 +28,9 @@ import { isLiveActionName } from './profile.mjs'
 const SNAPSHOT_POLL_MS = 150
 const IMPORT_POLL_MS = 1000
 const IMPORT_TIMEOUT_MS = 120_000
+const SURFACE_POLL_MS = 250
+const SURFACE_TIMEOUT_MS = 20_000
+const DRAFT_VIEW_SETTLE_MS = 5000
 /** Bounded wait for the upload alert to render before the run is abandoned. */
 const NOTICE_ATTEMPTS = 20
 const PHASES = Object.freeze(['surface', 'snapshot', 'upload', 'notice', 'correlation'])
@@ -72,6 +75,16 @@ function normalizedTimeout(value, name, fallback) {
     throw new TypeError(`${name} must be a non-negative integer`)
   }
   return timeout
+}
+
+/** Zero-interval polling (tests) never sleeps, so it gets a small fixed attempt cap instead. */
+const ZERO_INTERVAL_ATTEMPTS = 20
+
+/** Reads allowed inside `timeoutMs` at `intervalMs` apart, counting the first immediate read. */
+function boundedAttempts(timeoutMs, intervalMs) {
+  if (timeoutMs === 0) return 1
+  if (intervalMs === 0) return Math.min(timeoutMs + 1, ZERO_INTERVAL_ATTEMPTS)
+  return Math.ceil(timeoutMs / intervalMs) + 1
 }
 
 function sameOriginUrl(value, profile, label) {
@@ -121,11 +134,22 @@ export function createDepopBulkListingCapability(options = {}) {
       : requiredFunction(options.beforeBulkWrite, 'beforeBulkWrite')
   const interactionDelayMs = normalizedDelay(options.interactionDelayMs, 'interactionDelayMs')
   const snapshotPollMs = normalizedTimeout(options.snapshotPollMs, 'snapshotPollMs', SNAPSHOT_POLL_MS)
+  const draftViewSettleMs = normalizedTimeout(
+    options.draftViewSettleMs,
+    'draftViewSettleMs',
+    DRAFT_VIEW_SETTLE_MS
+  )
   const importPollMs = normalizedTimeout(options.importPollMs, 'importPollMs', IMPORT_POLL_MS)
   const importTimeoutMs = normalizedTimeout(
     options.importTimeoutMs,
     'importTimeoutMs',
     IMPORT_TIMEOUT_MS
+  )
+  const surfacePollMs = normalizedTimeout(options.surfacePollMs, 'surfacePollMs', SURFACE_POLL_MS)
+  const surfaceTimeoutMs = normalizedTimeout(
+    options.surfaceTimeoutMs,
+    'surfaceTimeoutMs',
+    SURFACE_TIMEOUT_MS
   )
   for (const method of ['goto', 'url']) requiredFunction(tab[method], `tab.${method}`)
 
@@ -133,6 +157,7 @@ export function createDepopBulkListingCapability(options = {}) {
     startedAt: null,
     completedAt: null,
     steps: 0,
+    uploadAttempts: 0,
     uploads: 0,
     skuLookups: 0,
     pollRounds: 0,
@@ -241,22 +266,43 @@ export function createDepopBulkListingCapability(options = {}) {
   }
 
   /**
-   * False while the drafts table still shows its loading placeholder instead of rows. Best-effort:
-   * the placeholder's element was never mapped, so this scans a candidate-role list. A miss is
-   * harmless — correlation reads the SKU out of each draft rather than trusting novelty, so an
+   * True while a surface still shows Depop's loading placeholder. Best-effort: the placeholder's
+   * element was never mapped, so this scans a candidate-role list. A miss is harmless on draft
+   * views — correlation reads the SKU out of each draft rather than trusting novelty, so an
    * undercounted snapshot costs page-opens and can never mis-pair a row.
    */
-  async function draftTableSettled() {
-    if (!nonEmptyString(bulkListing.loadingText)) return true
+  async function loadingPlaceholderVisible() {
+    if (!nonEmptyString(bulkListing.loadingText)) return false
     for (const role of bulkListing.loadingRoles) {
       const located = await locate(byRole(role))
       for (let index = 0; index < refCount(located); index += 1) {
         if (String(refElement(located, index).name ?? '').includes(bulkListing.loadingText)) {
-          return false
+          return true
         }
       }
     }
-    return true
+    return false
+  }
+
+  async function draftTableSettled() {
+    return !(await loadingPlaceholderVisible())
+  }
+
+  async function waitForDraftTableSettled() {
+    const attempts = boundedAttempts(draftViewSettleMs, snapshotPollMs)
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (await draftTableSettled()) return true
+      if (attempt < attempts - 1 && snapshotPollMs > 0) await delay(snapshotPollMs)
+    }
+    return false
+  }
+
+  function surfaceMessage(observed, waitedMs) {
+    return (
+      `Observed ${observed.triggerCount} upload trigger(s), ` +
+      `${observed.inputCount} file input(s), loading placeholder ` +
+      `${observed.loadingVisible ? 'visible' : 'absent'} after ${waitedMs}ms`
+    )
   }
 
   /**
@@ -300,10 +346,15 @@ export function createDepopBulkListingCapability(options = {}) {
     metrics() {
       return {
         interaction_delay_ms: interactionDelayMs,
+        snapshot_poll_ms: snapshotPollMs,
+        draft_view_settle_ms: draftViewSettleMs,
+        surface_poll_ms: surfacePollMs,
+        surface_timeout_ms: surfaceTimeoutMs,
         import_timeout_ms: importTimeoutMs,
         elapsed_ms:
           metrics.startedAt === null ? 0 : (metrics.completedAt ?? Date.now()) - metrics.startedAt,
         steps: metrics.steps,
+        upload_attempts: metrics.uploadAttempts,
         uploads: metrics.uploads,
         sku_lookups: metrics.skuLookups,
         poll_rounds: metrics.pollRounds,
@@ -329,9 +380,11 @@ export function createDepopBulkListingCapability(options = {}) {
     },
 
     /**
-     * Confirms the page identity before any data leaves the host: the upload trigger must be
-     * present exactly once, and exactly one file control must be addressable. Inspection locates
-     * the trigger but does not activate it.
+     * Confirms the page identity before any data leaves the host. The path check is immediate:
+     * a wrong URL is not a hydration state. On the right path, inspection polls until the rendered
+     * surface exposes exactly one upload trigger and exactly one file control. A timeout with no
+     * rendered surface is `bulk_listing_surface_loading`; a rendered-but-wrong shape keeps the
+     * existing unrecognized/ambiguous codes with the observed counts.
      */
     async inspectBulkListingSurface() {
       phase = 'surface'
@@ -342,25 +395,61 @@ export function createDepopBulkListingCapability(options = {}) {
           'The browser is not on the bulk-listing page'
         )
       }
-      await exactlyOne(
-        byRole(bulkListing.trigger.role, bulkListing.trigger.name),
-        'bulk_listing_surface_unrecognized',
-        'upload trigger'
-      )
-      const inputs = await locate(byRole(bulkListing.fileInput.role))
-      if (refCount(inputs) !== 1) {
+      const attempts = boundedAttempts(surfaceTimeoutMs, surfacePollMs)
+      let observed = null
+      let triggerSeen = false
+      let surfaceSeen = false
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        const trigger = await locate(byRole(bulkListing.trigger.role, bulkListing.trigger.name))
+        const inputs = await locate(byRole(bulkListing.fileInput.role))
+        const loadingVisible = await loadingPlaceholderVisible()
+        observed = {
+          triggerCount: refCount(trigger),
+          inputCount: refCount(inputs),
+          loadingVisible,
+        }
+        triggerSeen ||= observed.triggerCount > 0
+        surfaceSeen ||= observed.triggerCount > 0 || observed.inputCount > 0
+        // The trigger + file control pair is the page's identity. The loading placeholder is a
+        // best-effort draft-list heuristic, so it only explains a timeout — it never vetoes a
+        // surface that already shows exactly one of each.
+        if (observed.triggerCount === 1 && observed.inputCount === 1) {
+          await pause()
+          return {
+            url: current.toString(),
+            accept: bulkListing.accept,
+            multiple: bulkListing.multiple,
+            trigger_activated: false,
+          }
+        }
+        // Not yet the expected shape — still hydrating, or a transient extra node — so wait and
+        // re-read; the verdict below is only reached once the whole budget is spent.
+        if (attempt < attempts - 1 && surfacePollMs > 0) await delay(surfacePollMs)
+      }
+      const waitedMs = Math.max(0, attempts - 1) * surfacePollMs
+      if (!triggerSeen && (observed?.loadingVisible === true || !surfaceSeen)) {
         throw bulkListingError(
-          'bulk_listing_file_input_ambiguous',
-          'The bulk-listing page does not expose exactly one file control'
+          'bulk_listing_surface_loading',
+          `Bulk-listing surface was still loading. ${surfaceMessage(observed, waitedMs)}`
         )
       }
-      await pause()
-      return {
-        url: current.toString(),
-        accept: bulkListing.accept,
-        multiple: bulkListing.multiple,
-        trigger_activated: false,
+      if (observed?.triggerCount !== 1) {
+        throw bulkListingError(
+          'bulk_listing_surface_unrecognized',
+          `Expected exactly one upload trigger. ${surfaceMessage(observed, waitedMs)}`
+        )
       }
+      if (observed.inputCount !== 1) {
+        throw bulkListingError(
+          'bulk_listing_file_input_ambiguous',
+          `The bulk-listing page does not expose exactly one file control. ` +
+            surfaceMessage(observed, waitedMs)
+        )
+      }
+      throw bulkListingError(
+        'bulk_listing_surface_unrecognized',
+        `Bulk-listing surface did not settle. ${surfaceMessage(observed, waitedMs)}`
+      )
     },
 
     /**
@@ -368,7 +457,8 @@ export function createDepopBulkListingCapability(options = {}) {
      * opened by its own URL — a snapshot that only loaded the entry point would see the Incomplete
      * view alone and miss a Ready-to-post row — and the landed path is checked against that view's
      * own path so a redirect cannot pass as coverage. A view still rendering its loading
-     * placeholder is skipped rather than read as an empty view.
+     * placeholder is polled for `draftViewSettleMs`; only after that bounded wait is it skipped
+     * rather than read as an empty view.
      */
     async snapshotDraftUrls() {
       phase = 'snapshot'
@@ -376,12 +466,9 @@ export function createDepopBulkListingCapability(options = {}) {
       const pending = []
       for (const view of bulkListing.draftViews) {
         await openDraftView(view)
-        if (!(await draftTableSettled())) {
-          if (snapshotPollMs > 0) await delay(snapshotPollMs)
-          if (!(await draftTableSettled())) {
-            pending.push(view.id)
-            continue
-          }
+        if (!(await waitForDraftTableSettled())) {
+          pending.push(view.id)
+          continue
         }
         for (const url of await stableDraftEditUrls(countedDriver, profile, {
           pollMs: snapshotPollMs,
@@ -443,6 +530,7 @@ export function createDepopBulkListingCapability(options = {}) {
         'upload trigger'
       )
       countDriverAction()
+      metrics.uploadAttempts += 1
       const delivered = await driver.uploadFiles(refAt(input, 0), files, { trigger })
       metrics.uploads += 1
       await pause()

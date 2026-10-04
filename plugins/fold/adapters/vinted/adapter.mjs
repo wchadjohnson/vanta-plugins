@@ -100,6 +100,23 @@ function singleLabel(fields, key, errors) {
   return values[0]
 }
 
+function optionalSingleId(fields, key, errors) {
+  const values = fields[key]
+  if (values === undefined) return null
+  if (Array.isArray(values) && values.length === 0) return null
+  if (!Array.isArray(values) || values.length !== 1 || !nonEmptyString(values[0]) || !VINTED_ID.test(values[0])) {
+    errors.push(
+      validationError(
+        `invalid_${key}`,
+        `marketplace_fields.${key}`,
+        `${key} must be absent or exactly one non-empty Vinted id`
+      )
+    )
+    return null
+  }
+  return values[0]
+}
+
 /**
  * Reads Fold's projection into the exact values the form takes. Returns null with errors pushed
  * when anything is missing or malformed; the caller refuses the listing rather than guessing.
@@ -142,6 +159,16 @@ function projectFields(listing, profile, errors) {
   }
   const packageSize = singleId(fields, 'package_size', errors, { required: true })
   const brand = singleLabel(fields, 'brand', errors)
+  const brandId = optionalSingleId(fields, 'brand_id', errors)
+  if (brandId !== null && brand === null) {
+    errors.push(
+      validationError(
+        'invalid_brand_id',
+        'marketplace_fields.brand_id',
+        'brand_id requires marketplace_fields.brand so the Vinted brand search can be scoped'
+      )
+    )
+  }
   const size = singleLabel(fields, 'size', errors)
   const colors = idList(fields, 'color', profile.limits.maxColors, errors)
   const materials = idList(fields, 'material', profile.limits.maxMaterials, errors)
@@ -165,6 +192,7 @@ function projectFields(listing, profile, errors) {
     condition: Object.freeze({ id: conditionId, label: VINTED_CONDITIONS[conditionId] }),
     packageSize,
     brand,
+    brandId,
     size,
     colors,
     materials,
@@ -372,6 +400,7 @@ export function createVintedAdapter(options = {}) {
       ),
       category: projected.category,
       brand: projected.brand,
+      brandId: projected.brandId,
       size: projected.size,
       condition: projected.condition,
       colors: Object.freeze([...projected.colors]),

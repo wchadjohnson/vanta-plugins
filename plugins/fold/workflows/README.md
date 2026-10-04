@@ -25,6 +25,16 @@ per host call, a per-listing outcome, and a persisted report that prevents dupli
 Depop bulk path it returns what to record (`to_record`) and leaves `mark_published` to the host's
 Fold connector. `photo-files.mjs` is the ready-made photo resolver browser capabilities need.
 
+`post-drafts.mjs` is the single entry point the skill calls to post drafts: `postDrafts({ marketplace,
+callTool, browser, ... })` wires the provider capability, profile, adapter and the two workflows
+above, calls Fold through the host's `callTool` (Fold MCP tool names verbatim), records drafts
+with `mark_published` itself, and returns one `fold-post-drafts/1` report. For Depop it proves the
+bulk page usable before `export_depop_csv` (Fold leases what it exports), reports the upload with
+`report_csv_upload` exactly once, and reconciles rows an earlier run delivered. It is the only module
+here that writes files (the CSV and the Vinted report, under the OS temp folder); `bulk-listing.mjs`
+stays I/O-free. `createFoldToolBridge` is the `callTool` for hosts whose Fold tools and browser
+live in different runtimes (Codex app: `exec` vs `cua_repl`).
+
 Adapters retain resale-platform selectors, form mappings, API assertions, and sender rules. The
 Depop adapter is draft-only and must never target Post, Publish, List, Make live, or equivalent
 controls. A later public-post action remains outside this workflow and requires its own explicit

@@ -46,6 +46,7 @@ export async function createVintedBrowserCapabilityForProvider(options = {}) {
     beforeAuthenticatedWrite: createWriteProbe(tab.driver, profile, exactVintedSurfaceProbe),
     interactionDelayMs: options.interactionDelayMs,
     pollMs: options.pollMs,
+    pollAttempts: options.pollAttempts,
     memberId: options.memberId,
     saveConfirmationMs: options.saveConfirmationMs,
   })

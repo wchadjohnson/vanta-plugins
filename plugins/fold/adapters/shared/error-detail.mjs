@@ -1,4 +1,4 @@
-const MAX_DETAIL_LENGTH = 300
+const MAX_DETAIL_LENGTH = 600
 
 /**
  * A host-diagnosable, secret-free rendering of an underlying error: its message (and code, when it

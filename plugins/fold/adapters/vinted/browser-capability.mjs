@@ -30,6 +30,10 @@ function collapsed(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
 
+function quoteFolded(value) {
+  return collapsed(value).replace(/["\u201c\u201d\u201e\u201f\u2033'\u2018\u2019]/g, '"').toLocaleLowerCase('en-US')
+}
+
 function capabilityError(code, message, extra = {}) {
   const error = new Error(message)
   error.code = code
@@ -98,6 +102,7 @@ export function createVintedBrowserCapability(options = {}) {
       : requiredFunction(options.beforeAuthenticatedWrite, 'beforeAuthenticatedWrite')
   const interactionDelayMs = normalizedInteger(options.interactionDelayMs, 'interactionDelayMs', 0, 1000)
   const pollMs = normalizedInteger(options.pollMs, 'pollMs', POLL_MS, 5000)
+  const pollAttempts = normalizedInteger(options.pollAttempts, 'pollAttempts', POLL_ATTEMPTS, 1000)
   // The seller's wardrobe is `/member/{memberId}`; Save draft lands there. Supplied by the host, or
   // learned from the first landing; required before a draft is created so an existing one is found.
   let memberId = options.memberId === undefined || options.memberId === null ? null : String(options.memberId)
@@ -645,45 +650,98 @@ export function createVintedBrowserCapability(options = {}) {
   }
 
   /**
-   * Brand results are only read once they demonstrably belong to this search: the custom-brand row
-   * echoes the query, the "Popular brands" list shown before typing is gone, and the same result
-   * set is read three times running. LIVE-UNCONFIRMED: that the popular label leaves once a search
-   * runs — it is present in the captured unsearched dropdown and absent from both captured searches.
+   * Brand results are only read once they demonstrably belong to this search. The live 2026-10-04
+   * capture showed three settled shapes: an exact catalogue match with no custom row, partial
+   * catalogue results with a custom row, and an empty state with a custom row. All three lose the
+   * pre-search "Popular brands" label and hold the same result signature for consecutive reads.
    */
   async function settledBrandResults(query) {
-    const customText = `Use "${query}" as brand`
+    const wanted = brandKey(query)
     let previous = null
     let stableReads = 0
-    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
+    let bestStableReads = 0
+    let last = null
+    for (let attempt = 0; attempt < pollAttempts; attempt += 1) {
       const family = await optionFamily('radio', optionPatterns.brand)
       const custom = await driver.locate(byId(optionIds.brandCustom))
+      const customCount = refCount(custom)
       const popular = refCount(await driver.locate(byId(optionIds.brandPopularLabel)))
       const empty = refCount(await driver.locate(byTestId(controls.brandEmptyState)))
-      const ready =
-        refCount(custom) === 1 &&
-        collapsed(refElement(custom).name) === customText &&
-        popular === 0 &&
-        (family.members.length > 0 || empty === 1)
       const signature = JSON.stringify(family.members.map(({ element }) => [element.id, collapsed(element.name)]))
+
+      const results = family.members.map(({ element }) => element)
+      const exactMatchPresent = results.some((element) => brandKey(element.name) === wanted)
+      const customText = customCount === 1 ? collapsed(refElement(custom).name) : ''
+      const search = await brandSearchRead()
+      const emptyMatchesResults = results.length === 0 ? empty === 1 : empty === 0
+      const customEchoesQuery = customCount === 1 && quoteFolded(customText).includes(`"${quoteFolded(query)}"`)
+      const ready =
+        collapsed(search.value) === collapsed(query) &&
+        popular === 0 &&
+        emptyMatchesResults &&
+        // An exact match is enough on its own: selectBrand clicks that row, never the custom one, so a
+        // custom row shown beside it changes nothing. Without one, the custom row must echo the query.
+        (exactMatchPresent || (customCount === 1 && customEchoesQuery))
+      // Only consecutive READY reads count toward stability, so results that were stable before the
+      // search input or the custom row caught up cannot be accepted on the first ready read.
       if (ready) {
         stableReads = signature === previous ? stableReads + 1 : 1
         previous = signature
-        if (stableReads >= STABLE_READS) return family.members.map(({ element }) => element)
       } else {
         stableReads = 0
         previous = null
       }
+      bestStableReads = Math.max(bestStableReads, stableReads)
+      last = {
+        searchValue: search.value,
+        popular,
+        results,
+        exactMatchPresent,
+        customCount,
+        customText,
+        empty,
+      }
+      if (ready && stableReads >= STABLE_READS) return results
       if (pollMs > 0) await delay(pollMs)
     }
-    throw fieldError('brand', 'results_unsettled', 'Vinted brand search results did not settle')
+    throw fieldError('brand', 'results_unsettled', brandResultsUnsettledMessage(query, last, bestStableReads))
   }
 
-  /** Exact brand (case-insensitive) -> that row; no exact match -> Vinted's custom brand; none -> No brand. */
-  async function selectBrand(brand) {
+  async function brandSearchRead() {
+    for (const query of [byId(optionIds.brandSearchInput), byTestId(controls.brandSearch)]) {
+      const located = await driver.locate(query)
+      if (refCount(located) === 1) return { value: String(refElement(located).value ?? '') }
+    }
+    return { value: '' }
+  }
+
+  function brandResultsUnsettledMessage(query, read, bestStableReads) {
+    const names = (read?.results ?? []).map((element) => collapsed(element.name)).slice(0, 5)
+    const custom =
+      read?.customCount === 1
+        ? `present true text "${read.customText}"`
+        : `present false count ${read?.customCount ?? 0}`
+    return (
+      `Vinted brand search results did not settle: search input "${collapsed(read?.searchValue)}" vs ` +
+      `query "${collapsed(query)}"; popular label count ${read?.popular ?? 0}; result count ` +
+      `${read?.results?.length ?? 0}${names.length > 0 ? ` (${names.join(', ')})` : ''}; ` +
+      `exact match present ${read?.exactMatchPresent === true}; custom row ${custom}; ` +
+      `empty state present ${(read?.empty ?? 0) > 0}; stable reads ${bestStableReads}/${STABLE_READS}; ` +
+      `budget ${pollAttempts} attempts x ${pollMs} ms`
+    )
+  }
+
+  function noteBrandIdFallback(brandId, selected) {
+    notes.brand_id_fallback = { brand_id: brandId, selected }
+  }
+
+  /** Exact brand id, else exact brand name (case-insensitive), else Vinted's custom brand; none -> No brand. */
+  async function selectBrand(brand, brandId = null) {
     const preset = collapsed(await inputValue(controls.brand, 'brand'))
     // Vinted may already show Fold's brand (it guesses brands from the photos). The same name,
-    // ignoring case only, is accepted as is and still re-read before Save draft.
-    if (brand !== null && preset !== '' && brandKey(preset) === brandKey(brand)) {
+    // ignoring case only, is accepted as is and still re-read before Save draft. Not when Fold sent
+    // a brand id: a pre-filled label cannot prove which brand row it came from, so the id is selected.
+    if (brandId === null && brand !== null && preset !== '' && brandKey(preset) === brandKey(brand)) {
       expectShows(controls.brand, preset, 'brand')
       return
     }
@@ -708,6 +766,28 @@ export function createVintedBrowserCapability(options = {}) {
     await pause()
     const results = await settledBrandResults(brand)
     const wanted = brandKey(brand)
+    if (brandId !== null) {
+      const requested = optionIds.brand(brandId)
+      const option = await driver.locate(byId(requested))
+      const count = refCount(option)
+      if (count > 1) {
+        throw fieldError('brand', 'option_ambiguous', `More than one Vinted brand carries id ${requested}`)
+      }
+      if (count === 1) {
+        const label = collapsed(refElement(option).name)
+        if (brandKey(label) !== wanted) {
+          throw fieldError(
+            'brand',
+            'option_mismatch',
+            `Vinted offered brand id ${brandId} as "${label}", not expected brand "${collapsed(brand)}"`
+          )
+        }
+        await click(option)
+        await assertDropdownShows(controls.brand, label, 'brand')
+        expectShows(controls.brand, label, 'brand')
+        return
+      }
+    }
     const exact = results.filter((element) => brandKey(element.name) === wanted)
     if (exact.length > 1) {
       throw fieldError('brand', 'option_ambiguous', 'More than one Vinted brand matches this brand exactly')
@@ -719,11 +799,13 @@ export function createVintedBrowserCapability(options = {}) {
       await click(await exactlyOne(byId(exact[0].id), 'brand', `brand ${label}`))
       await assertDropdownShows(controls.brand, label, 'brand')
       expectShows(controls.brand, label, 'brand')
+      if (brandId !== null) noteBrandIdFallback(brandId, 'name_match')
       return
     }
     await click(await exactlyOne(byId(optionIds.brandCustom), 'brand', 'the custom brand option'))
     await assertDropdownShows(controls.brand, brand, 'brand')
     expectShows(controls.brand, brand, 'brand')
+    if (brandId !== null) noteBrandIdFallback(brandId, 'custom')
   }
 
   async function selectSize(size) {
@@ -864,7 +946,7 @@ export function createVintedBrowserCapability(options = {}) {
     await step('description', () => fillExact(controls.description, prepared.description, 'description'))
     await step('category', () => selectCategory(prepared.category))
     for (const list of prepared.lists) await step(list.code, () => selectListOption(list))
-    await step('brand', () => selectBrand(prepared.brand))
+    await step('brand', () => selectBrand(prepared.brand, prepared.brandId))
     if (prepared.size !== null) await step('size', () => selectSize(prepared.size))
     await step('condition', () => selectCondition(prepared.condition))
     await step('color', () =>
