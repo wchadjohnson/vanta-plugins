@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "fold": {
-      "type": "http",
-      "url": "${FOLD_MCP_URL:-https://vanta-fold.vercel.app/api/mcp}"
-    }
-  }
-}

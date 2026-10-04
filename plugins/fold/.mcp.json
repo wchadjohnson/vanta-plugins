@@ -2,8 +2,7 @@
   "mcpServers": {
     "fold": {
       "type": "http",
-      "url": "https://vanta-fold.vercel.app/api/mcp",
-      "oauth_resource": "https://vanta-fold.vercel.app/api/mcp"
+      "url": "${FOLD_MCP_URL:-https://vanta-fold.vercel.app/api/mcp}"
     }
   }
 }

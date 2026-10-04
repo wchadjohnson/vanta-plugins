@@ -1,6 +1,6 @@
 {
   "name": "fold",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Create verified drafts from greenlit Fold listings",
   "author": {
     "name": "Vanta"
@@ -12,7 +12,7 @@
     "lifecycle"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Fold",
     "shortDescription": "Create verified resale drafts from greenlit Fold listings",
