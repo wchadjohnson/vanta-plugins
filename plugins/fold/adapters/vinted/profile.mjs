@@ -203,6 +203,79 @@ const DRAFT_EDIT = Object.freeze({
   photoDeleteSelector: '[data-testid^="media-select-grid-delete-button-"]',
 })
 
+/**
+ * Taking a saved draft live, captured 2026-10-04 on throwaway test drafts (posted, captured, then
+ * deleted; live capture 2026-10-04):
+ *
+ * - The draft's edit page `/items/{id}/edit` carries Upload (`upload-form-save-button`, the one
+ *   go-live control), Save draft and Delete draft. A draft's id is its item id.
+ * - Upload has no confirmation dialog. It lands on the seller's wardrobe `/member/{memberId}`, NOT
+ *   on the item, so the click proves nothing by itself: the edit page must at least be left.
+ * - `/items/{id}` then redirects to the canonical `/items/{id}-{slug}` (canonical and og:url
+ *   agree), and the owner's view carries `item-delete-button` / `item-edit-button` — the live
+ *   markers. That canonical URL is what Fold records with `mark_live`.
+ * - Element-ref clicks on Upload silently did nothing in Claude in Chrome while real clicks
+ *   worked, so a click is only ever trusted through the state change that follows it.
+ *
+ * Only the go-live capability reads this section, and it presses `publish` alone. Save draft and
+ * Delete draft are listed so that capability can refuse them by test id.
+ */
+const GO_LIVE = Object.freeze({
+  draftPathPattern: /^\/items\/(\d+)\/edit\/?$/,
+  publish: Object.freeze({ testId: VINTED_PUBLISH_TEST_ID, name: VINTED_PUBLISH_NAME }),
+  draftOnlyTestIds: Object.freeze(['upload-form-save-draft-button', 'upload-form-delete-draft-button']),
+  neverClick: Object.freeze(['upload-form-save-draft-button', 'upload-form-delete-draft-button']),
+  itemPath: (id) => `/items/${id}`,
+  publicPathPattern: (id) => new RegExp(`^/items/${id}-[^/]+/?$`),
+  liveMarkerTestIds: Object.freeze(['item-delete-button', 'item-edit-button']),
+})
+
+/**
+ * Deleting a drafted sibling after a sale or a Delist all, captured 2026-10-04 on throwaway test
+ * drafts (live draft-delete capture, 2026-10-04):
+ *
+ * - On `/items/{id}/edit`, `upload-form-delete-draft-button` "Delete draft" deletes IMMEDIATELY —
+ *   no confirmation — and lands on `/member/{memberId}`. Upload (go-live) sits on the same page, so
+ *   the control is matched by test id only and Upload/Save draft are refused by test id.
+ * - A first click after load was swallowed once: a click is only trusted through what follows it.
+ * - Once deleted, `/items/{id}/edit` renders "Sorry, something went wrong" with no `upload-form-*`
+ *   controls (not a 404) — the deleted marker, and the already-deleted marker on a later run.
+ *
+ * Only the draft-delete capability reads this section.
+ */
+const DRAFT_DELETE = Object.freeze({
+  draftPathPattern: /^\/items\/(\d+)\/edit\/?$/,
+  deleteControl: Object.freeze({ testId: 'upload-form-delete-draft-button', name: 'Delete draft' }),
+  formTestIds: Object.freeze(['upload-form-save-draft-button', 'upload-form-delete-draft-button']),
+  neverClick: Object.freeze([VINTED_PUBLISH_TEST_ID, 'upload-form-save-draft-button']),
+  goneText: 'Sorry, something went wrong',
+  goneTextSelector: 'h1, h2, h3, h4, p, span, div',
+  // The deleted-draft page and a consumed (posted) draft can look alike, so before Delete draft is
+  // pressed and before a gone draft is confirmed, the item's own page must NOT be live: the
+  // canonical `/items/{id}-{slug}` with the owner's Delete (the same live markers go-live checks).
+  itemPath: (id) => `/items/${id}`,
+  publicPathPattern: (id) => new RegExp(`^/items/${id}-[^/]+/?$`),
+  liveMarkerTestId: 'item-delete-button',
+  // Captured 2026-10-04: a LIVE item's `/items/{id}/edit` ("Edit listing", h1 "Sell an item") renders only
+  // `upload-form-save-button` named "Save" — no Save draft, no Delete draft. That page is went_live,
+  // never a draft and never a deleted draft. Read only; never clicked.
+  liveEditForm: Object.freeze({ testId: VINTED_PUBLISH_TEST_ID, name: 'Save' }),
+})
+
+/** The URL Fold recorded, when it is https on the profile's own origin with no extras; else null. */
+function exactRecordedUrl(value, profile) {
+  if (typeof value !== 'string') return null
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.origin !== profile.origin) return null
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') return null
+  return url
+}
+
 function requiredString(value, name) {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new TypeError(`${name} must be a non-empty string`)
@@ -253,6 +326,8 @@ export function createVintedTargetProfile(options = {}) {
     wardrobe: WARDROBE,
     delist: DELIST,
     draftEdit: DRAFT_EDIT,
+    goLive: GO_LIVE,
+    draftDelete: DRAFT_DELETE,
     controls: CONTROLS,
     options: OPTIONS,
     optionPatterns: OPTION_PATTERNS,
@@ -304,6 +379,22 @@ export function vintedDraftEditUrl(externalIdentity, profile) {
     throw new TypeError('A Vinted draft identity is a numeric item id')
   }
   return new URL(`/items/${externalIdentity}/edit`, profile.origin).toString()
+}
+
+/**
+ * The item id of a draft URL Fold recorded, when it is exactly a Vinted draft edit URL: https on
+ * the profile's own origin, `/items/{id}/edit`, no credentials, query or fragment. Anything else is
+ * null, and the go-live capability refuses it before navigating.
+ */
+export function vintedGoLiveDraftId(value, profile) {
+  const url = exactRecordedUrl(value, profile)
+  return url === null ? null : (profile.goLive.draftPathPattern.exec(url.pathname)?.[1] ?? null)
+}
+
+/** The same exact-shape check for the draft-delete path, against its own profile section. */
+export function vintedDeleteDraftId(value, profile) {
+  const url = exactRecordedUrl(value, profile)
+  return url === null ? null : (profile.draftDelete.draftPathPattern.exec(url.pathname)?.[1] ?? null)
 }
 
 /** The item id of a draft edit URL, else null. */

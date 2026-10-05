@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
-import os from 'node:os'
+import { rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-// Imported, never the global: the ChatGPT app's browser runtime loads node: modules but does not
-// define Node's `process` global.
-import process from 'node:process'
 
 import { createAuthenticatedDepopTargetProfile } from '../adapters/depop/profile.mjs'
-import { createDepopBulkListingCapabilityForProvider } from '../adapters/depop/provider-capabilities.mjs'
+import {
+  createDepopBulkListingCapabilityForProvider,
+  createDepopGoLiveCapabilityForProvider,
+} from '../adapters/depop/provider-capabilities.mjs'
 import { createVintedAdapter } from '../adapters/vinted/adapter.mjs'
 import { createAuthenticatedVintedTargetProfile } from '../adapters/vinted/profile.mjs'
-import { createVintedBrowserCapabilityForProvider } from '../adapters/vinted/provider-capabilities.mjs'
+import {
+  createVintedBrowserCapabilityForProvider,
+  createVintedGoLiveCapabilityForProvider,
+} from '../adapters/vinted/provider-capabilities.mjs'
 import {
   exportDepopCsvBatch,
   importCsvBatch as runImportCsvBatch,
@@ -22,15 +24,47 @@ import {
 } from './bulk-listing.mjs'
 import { DRAFT_BATCH_REPORT_VERSION, expectedToRecord, recordDraftResult, runDraftBatch } from './draft-batch.mjs'
 import { createPhotoFileResolver } from './photo-files.mjs'
+import {
+  nonEmptyString,
+  isPlainObject,
+  errorCode,
+  errorMessage,
+  clone,
+  assertAbsolutePath,
+  assertOptions,
+  privateTempDir,
+  writeJsonPrivate,
+  readJsonFile,
+  writeFoldCallFile,
+  hasDotDotSegment,
+  pathInside,
+  sameTmpParent,
+  validatePrivateWorkspace,
+  tryReadJson,
+  toolText,
+  structuredFrom,
+  unansweredResult,
+  readResultsForCalls,
+  foldFailureFromResult,
+} from './phase-files.mjs'
 
 export const POST_DRAFTS_REPORT_VERSION = 'fold-post-drafts/2'
 export const POST_DRAFTS_STATE_VERSION = 'fold-post-drafts-state/1'
 export const DEPOP_UPLOAD_JS_TIMEOUT_MS = 300_000
+export const GO_LIVE_REPORT_VERSION = 'fold-go-live/1'
+export const GO_LIVE_STATE_VERSION = 'fold-go-live-state/1'
+export const GO_LIVE_JS_TIMEOUT_MS = 300_000
 export const FOLD_TOOL_NAMES = Object.freeze([
   'list_ready_listings',
   'export_depop_csv',
   'report_csv_upload',
   'mark_published',
+  'list_drafted_listings',
+  'mark_live',
+  'mark_sold',
+  'delist_sold_siblings',
+  'list_pending_delists',
+  'report_delist',
 ])
 
 const RECORDED = new Set(['published', 'already_published'])
@@ -49,124 +83,13 @@ const VINTED_ENVELOPE_KEYS = new Set([
   '__fold_post_drafts',
 ])
 
-function nonEmptyString(value) {
-  return typeof value === 'string' && value.trim() !== ''
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function errorCode(error, fallback) {
-  return typeof error?.code === 'string' ? error.code : fallback
-}
-
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value))
-}
-
 function assertObject(value, label) {
   if (!isPlainObject(value)) throw new TypeError(`${label} must be an object`)
   return value
 }
 
-function assertAbsolutePath(value, label) {
-  if (!nonEmptyString(value) || !path.isAbsolute(value)) {
-    throw new TypeError(`${label} must be an absolute path`)
-  }
-  return value
-}
-
-function assertOptions(value) {
-  if (value !== undefined && !isPlainObject(value)) throw new TypeError('options must be an object')
-  return value ?? {}
-}
-
-async function privateTempDir(prefix) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), prefix))
-  await chmod(directory, 0o700)
-  return directory
-}
-
-async function writeJsonPrivate(file, value) {
-  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
-}
-
 async function writeTextPrivate(file, value) {
   await writeFile(file, value, { mode: 0o600 })
-}
-
-async function readJsonFile(file) {
-  return JSON.parse(await readFile(file, 'utf8'))
-}
-
-async function writeFoldCallFile(directory, foldCalls) {
-  if (!Array.isArray(foldCalls) || foldCalls.length === 0) {
-    return { fold_calls_path: null, results_path: null }
-  }
-  const id = randomUUID()
-  const foldCallsPath = path.join(directory, `fold-calls-${id}.json`)
-  const resultsPath = path.join(directory, `fold-results-${id}.json`)
-  await writeJsonPrivate(foldCallsPath, { fold_calls: foldCalls, results_path: resultsPath })
-  return { fold_calls_path: foldCallsPath, results_path: resultsPath }
-}
-
-function hasDotDotSegment(value) {
-  return nonEmptyString(value) && value.split(/[\\/]+/).includes('..')
-}
-
-function pathInside(directory, candidate) {
-  return (
-    nonEmptyString(candidate) &&
-    path.isAbsolute(candidate) &&
-    !hasDotDotSegment(candidate) &&
-    path.normalize(candidate) === candidate &&
-    path.dirname(candidate) === directory
-  )
-}
-
-async function sameTmpParent(parent) {
-  const tmp = path.normalize(os.tmpdir())
-  let realTmp = tmp
-  let realParent = parent
-  try {
-    realTmp = await realpath(tmp)
-  } catch {
-    // A missing tmp dir would be reported by the workspace stat check.
-  }
-  try {
-    realParent = await realpath(parent)
-  } catch {
-    // A missing parent will fail the direct comparison and later stat checks.
-  }
-  return parent === tmp || parent === realTmp || realParent === realTmp
-}
-
-async function validatePrivateWorkspace({ workspaceDir, statePath, prefix, stateFile }) {
-  if (!nonEmptyString(workspaceDir)) return 'workspace_dir must be a non-empty string'
-  if (!pathInside(workspaceDir, statePath)) return 'state path is outside its workspace directory'
-  if (path.basename(statePath) !== stateFile) return `state path must end in ${stateFile}`
-  if (!path.basename(workspaceDir).startsWith(prefix)) return `workspace_dir must start with ${prefix}`
-  if (!(await sameTmpParent(path.dirname(workspaceDir)))) return 'workspace_dir must be directly under the private temp directory'
-  let directoryStats
-  let stateStats
-  try {
-    directoryStats = await stat(workspaceDir)
-    stateStats = await stat(statePath)
-  } catch (error) {
-    return errorMessage(error)
-  }
-  if (!directoryStats.isDirectory()) return 'workspace_dir is not a directory'
-  if ((directoryStats.mode & 0o777) !== 0o700) return 'workspace_dir mode is not 0700'
-  if ((stateStats.mode & 0o777) !== 0o600) return 'state file mode is not 0600'
-  if (typeof process.getuid === 'function' && directoryStats.uid !== process.getuid()) {
-    return 'workspace_dir is not owned by the current user'
-  }
-  return null
 }
 
 function deepEqual(a, b) {
@@ -191,14 +114,6 @@ function vintedStateFromBatch(batch, envelope, postDrafts) {
   }
   if (postDrafts !== undefined) state.__fold_post_drafts = postDrafts
   return state
-}
-
-async function tryReadJson(file) {
-  try {
-    return { ok: true, value: await readJsonFile(file) }
-  } catch (error) {
-    return { ok: false, failure_code: errorCode(error, 'file_unreadable'), reason: errorMessage(error) }
-  }
 }
 
 function stateInvalid(marketplace, reason, failureCode = 'state_invalid') {
@@ -254,30 +169,6 @@ function resultsPathMismatch(marketplace, expected, actual) {
     next: 'stop',
     fold_calls: [],
   }
-}
-
-function toolText(result) {
-  const parts = Array.isArray(result?.content) ? result.content : []
-  const text = parts
-    .filter((part) => part?.type === 'text' && nonEmptyString(part.text))
-    .map((part) => part.text.trim())
-    .join('\n')
-  return nonEmptyString(text) ? text : null
-}
-
-function structuredFrom(result) {
-  if (isPlainObject(result?.structuredContent)) return result.structuredContent
-  for (const part of Array.isArray(result?.content) ? result.content : []) {
-    if (part?.type !== 'text' || !nonEmptyString(part.text)) continue
-    try {
-      const parsed = JSON.parse(part.text)
-      if (isPlainObject(parsed)) return parsed
-    } catch {
-      // Text-only refusals are handled by the caller.
-    }
-  }
-  if (isPlainObject(result) && !('content' in result) && !('structuredContent' in result)) return result
-  return null
 }
 
 function safeCsvFilename(filename) {
@@ -344,6 +235,7 @@ function tally(report) {
     pending: new Set(['pending', 'awaiting_confirmation', 'awaiting_save_confirmation']),
     failed: new Set(['not_imported', 'draft_unrecorded', 'rejected', 'failed', 'blocked']),
     needs_attention: new Set(['ambiguous', 'needs_manual_check', 'existing_draft']),
+    old_draft_pending: new Set(['old_draft_pending_deletion']),
   }
   for (const [key, outcomes] of Object.entries(groups)) {
     report[key] = report.listings.filter((entry) => outcomes.has(entry.outcome)).map((entry) => entry.listing_id)
@@ -375,6 +267,11 @@ function summaryText(report) {
     )
   }
   if (report.failed.length > 0) lines.push(`${plural(report.failed.length, 'listing')} not drafted or not recorded; see each reason.`)
+  if (report.old_draft_pending.length > 0) {
+    lines.push(
+      `${plural(report.old_draft_pending.length, 'draft')} saved on ${where} but not yet recorded: Fold holds ${report.old_draft_pending.length === 1 ? 'it' : 'them'} until the old draft from a Redo is deleted. Run the cleanup (list_pending_delists, the delist phase, report_delist), then record ${report.old_draft_pending.length === 1 ? 'it' : 'them'} with mark_published.`
+    )
+  }
   if (report.needs_attention.length > 0) lines.push(`${plural(report.needs_attention.length, 'listing')} need the seller to check their ${where} drafts.`)
   lines.push('Drafts only: nothing was posted publicly.')
   return lines.join(' ')
@@ -1014,7 +911,7 @@ export async function depopUpload({ browser, statePath, exportPath, profile, opt
       listing_url: row.listing_url,
       ...(row.reconciled ? { reconciled: true } : {}),
     })
-    foldCalls.push({ name: 'mark_published', args: { listing_id: row.listing_id, listing_url: row.listing_url } })
+    foldCalls.push({ name: 'mark_published', args: { listing_id: row.listing_id, listing_url: row.listing_url, visibility: 'draft' } })
   }
 
   if (notDelivered !== null) Object.assign(report, { outcome: 'upload_not_delivered', ...notDelivered })
@@ -1064,7 +961,7 @@ function vintedReportFromBatch(batch, reportPath, resultsPath, otherMarketplaceL
 function foldCallsForVinted(batch) {
   return (batch.to_record ?? []).map((entry) => ({
     name: 'mark_published',
-    args: { listing_id: entry.listing_id, listing_url: entry.listing_url },
+    args: { listing_id: entry.listing_id, listing_url: entry.listing_url, visibility: 'draft' },
   }))
 }
 
@@ -1227,38 +1124,6 @@ export async function vintedDraft({ browser, readyPath, memberId, resumeFrom, pr
   }
 }
 
-function unansweredResult() {
-  return { unanswered: true, isError: true, content: [{ type: 'text', text: 'Fold tool call was not answered' }] }
-}
-
-async function readResultsForCalls(resultsPath, foldCalls) {
-  let raw
-  try {
-    raw = await readJsonFile(resultsPath)
-  } catch {
-    raw = null
-  }
-  if (!Array.isArray(raw)) raw = []
-  if (raw.length !== foldCalls.length) {
-    return foldCalls.map((call) => ({ name: call.name, result: unansweredResult() }))
-  }
-  return foldCalls.map((call, index) => {
-    const entry = raw[index]
-    if (!isPlainObject(entry) || entry.name !== call.name) {
-      return { name: call.name, result: unansweredResult() }
-    }
-    return { name: call.name, result: entry.result ?? unansweredResult() }
-  })
-}
-
-function foldFailureFromResult(result, unansweredCode = 'fold_tool_unanswered') {
-  if (result?.unanswered === true) return { failure_code: unansweredCode, reason: 'Fold tool call was not answered' }
-  if (result?.isError === true) return { failure_code: 'fold_tool_refused', reason: toolText(result) ?? 'Fold refused the call' }
-  const data = structuredFrom(result)
-  if (!isPlainObject(data)) return { failure_code: 'fold_tool_result_unreadable', reason: 'Fold returned no structured content' }
-  return null
-}
-
 async function summarizeDepop({ statePath, resultsPath }) {
   const stateRead = await readDepopState(statePath)
   if (!stateRead.ok) return stateRead.result
@@ -1310,6 +1175,11 @@ async function summarizeDepop({ statePath, resultsPath }) {
     if (RECORDED.has(outcome)) {
       listing.outcome = 'recorded'
       listing.fold_outcome = outcome
+    } else if (outcome === 'old_draft_pending_deletion') {
+      // Not recorded and not failed: Fold holds the listing until its old Redo draft is deleted.
+      listing.outcome = 'old_draft_pending_deletion'
+      listing.fold_outcome = outcome
+      listing.reason = 'Fold holds this listing until its old draft (from a Redo) is deleted; run the cleanup, then record it'
     } else {
       listing.outcome = 'draft_unrecorded'
       listing.fold_outcome = typeof outcome === 'string' ? outcome : null
@@ -1379,5 +1249,336 @@ export async function summarizeResults({ statePath, resultsPath } = {}) {
   if (peek.value?.state_version === POST_DRAFTS_STATE_VERSION && peek.value?.marketplace === 'vinted') {
     return summarizeVinted({ statePath, resultsPath })
   }
+  if (peek.value?.state_version === GO_LIVE_STATE_VERSION && GO_LIVE_MARKETPLACES.has(peek.value?.marketplace)) {
+    return summarizeGoLive({ statePath, resultsPath })
+  }
   return stateInvalid('unknown', 'state file is not a recognized post-drafts state')
+}
+
+// ---------------------------------------------------------------------------------------------
+// Go-live: the seller explicitly asked for drafts Fold recorded to be made live.
+// ---------------------------------------------------------------------------------------------
+
+const GO_LIVE_MARKETPLACES = new Set(['vinted', 'depop'])
+const GO_LIVE_STATE_FILE = 'go-live.json'
+const GO_LIVE_WORKSPACE_PREFIX = 'fold-golive-'
+const GO_LIVE_DRAFTED_PREFIX = 'fold-drafted-'
+const GO_LIVE_DRAFTED_FILE = 'drafted.json'
+const GO_LIVE_MIN_REMAINING_MS = 60_000
+const LIVE_RECORDED = new Set(['live', 'already_live'])
+
+function goLiveWhere(marketplace) {
+  return marketplace === 'depop' ? 'Depop' : 'Vinted'
+}
+
+function goLiveSummaryText(report) {
+  const where = goLiveWhere(report.marketplace)
+  const by = (outcomes) => report.listings.filter((entry) => outcomes.includes(entry.outcome))
+  const lines = []
+  if (report.listings.length === 0) {
+    if (report.outcome === 'browser_unavailable') lines.push(`The ${where} page was not usable (${report.failure_code}), so nothing was made live.`)
+    else if (report.outcome === 'listing_failed') lines.push(`Fold did not hand over the drafted listings: ${report.reason}`)
+    else lines.push(`No ${where} drafts recorded in Fold were waiting to go live.`)
+  }
+  const live = by(['live'])
+  if (live.length > 0) {
+    lines.push(`${plural(live.length, 'listing')} live on ${where}: ${live.map((entry) => entry.public_url).join(', ')}.`)
+    const notYet = live.filter((entry) => entry.recorded === false)
+    if (notYet.length > 0 && report.summarized === true) lines.push(`${plural(notYet.length, 'listing')} not yet recorded as live in Fold.`)
+  }
+  const unrecorded = by(['live_unrecorded'])
+  if (unrecorded.length > 0) lines.push(`${plural(unrecorded.length, 'listing')} live on ${where} but Fold did not record it; see each reason.`)
+  const incomplete = by(['incomplete'])
+  if (incomplete.length > 0) lines.push(`${plural(incomplete.length, 'draft')} need required fields filled on ${where} before they can go live.`)
+  const mismatch = by(['mismatch'])
+  if (mismatch.length > 0) lines.push(`${plural(mismatch.length, 'draft')} could not be confirmed as Fold's draft, so nothing was clicked.`)
+  const unconfirmed = by(['unconfirmed'])
+  if (unconfirmed.length > 0) lines.push(`${plural(unconfirmed.length, 'draft')} may have gone live but could not be confirmed; nothing is ever pressed twice, so check ${where} by hand.`)
+  const errors = by(['error'])
+  if (errors.length > 0) lines.push(`${plural(errors.length, 'draft')} hit an error before anything was clicked.`)
+  const waiting = by(['not_attempted'])
+  if (waiting.length > 0) lines.push(`${plural(waiting.length, 'draft')} left for the next go-live call.`)
+  return lines.join(' ')
+}
+
+function goLiveReport(marketplace, extra = {}) {
+  const report = {
+    report_version: GO_LIVE_REPORT_VERSION,
+    kind: 'go_live',
+    marketplace,
+    outcome: null,
+    next: 'done',
+    summary_text: '',
+    listings: [],
+    ...extra,
+  }
+  report.summary_text = goLiveSummaryText(report)
+  return report
+}
+
+function goLiveStop(marketplace, outcome, failureCode, reason) {
+  const report = goLiveReport(marketplace, { outcome, failure_code: failureCode, reason })
+  return { marketplace, outcome, report, state_path: null, fold_calls: [], fold_calls_path: null, results_path: null, next: 'done' }
+}
+
+function assertListingIds(value) {
+  if (value === undefined || value === null) return null
+  if (!Array.isArray(value) || value.some((id) => !nonEmptyString(id))) {
+    throw new TypeError('listingIds must be an array of non-empty strings')
+  }
+  return new Set(value)
+}
+
+/**
+ * Shared body of the two go-live phases. One `js` call: every browser action starts and finishes
+ * here, and Fold's `mark_live` calls are handed back as a `fold_calls` file for the exec step.
+ */
+/** The listing ids an earlier go-live call already pressed for, from its validated state. */
+async function goLivePriorPressed(marketplace, priorStatePath) {
+  if (priorStatePath === undefined || priorStatePath === null) return { ok: true, ids: new Set() }
+  assertAbsolutePath(priorStatePath, 'priorStatePath')
+  const read = await tryReadJson(priorStatePath)
+  if (!read.ok) return { ok: false, reason: read.reason }
+  const state = read.value
+  if (
+    state?.state_version !== GO_LIVE_STATE_VERSION ||
+    state.marketplace !== marketplace ||
+    state.state_path !== priorStatePath ||
+    path.basename(priorStatePath) !== GO_LIVE_STATE_FILE
+  ) {
+    return { ok: false, reason: 'priorStatePath is not a go-live state for this marketplace' }
+  }
+  const workspaceError = await validatePrivateWorkspace({
+    workspaceDir: path.dirname(priorStatePath),
+    statePath: priorStatePath,
+    prefix: GO_LIVE_WORKSPACE_PREFIX,
+    stateFile: GO_LIVE_STATE_FILE,
+  })
+  if (workspaceError !== null) return { ok: false, reason: workspaceError }
+  return { ok: true, ids: new Set(Array.isArray(state.pressed_listing_ids) ? state.pressed_listing_ids.filter(nonEmptyString) : []) }
+}
+
+async function runGoLive(marketplace, { browser, draftedPath, listingIds, profile, options, priorStatePath }, createCapability, defaultProfile) {
+  if (!isPlainObject(browser)) throw new TypeError('browser must be the provider options object')
+  assertAbsolutePath(draftedPath, 'draftedPath')
+  const only = assertListingIds(listingIds)
+  const allOptions = assertOptions(options)
+  const { phaseBudgetMs = DEFAULT_PHASE_BUDGET_MS, ...capabilityOptions } = allOptions
+  if (!Number.isInteger(phaseBudgetMs) || phaseBudgetMs < 1) throw new TypeError('phaseBudgetMs must be a positive integer')
+  const startedAt = Date.now()
+
+  // The drafted-listings input is written by the host's exec step as drafted.json in a private
+  // mkdtemp folder (fold-drafted-*, 0700, this user) with mode 0600; anything else is refused.
+  const fileError = await validatePrivateWorkspace({
+    workspaceDir: path.dirname(draftedPath),
+    statePath: draftedPath,
+    prefix: GO_LIVE_DRAFTED_PREFIX,
+    stateFile: GO_LIVE_DRAFTED_FILE,
+  })
+  if (fileError !== null) return goLiveStop(marketplace, 'state_invalid', 'drafted_path_invalid', fileError)
+  const prior = await goLivePriorPressed(marketplace, priorStatePath)
+  if (!prior.ok) return goLiveStop(marketplace, 'state_invalid', 'prior_state_invalid', prior.reason)
+
+  const read = await tryReadJson(draftedPath)
+  if (!read.ok) return goLiveStop(marketplace, 'listing_failed', read.failure_code, read.reason)
+  if (read.value?.isError === true) {
+    return goLiveStop(marketplace, 'listing_failed', 'fold_tool_refused', toolText(read.value) ?? 'Fold refused list_drafted_listings')
+  }
+  const drafted = structuredFrom(read.value)
+  if (!isPlainObject(drafted)) {
+    return goLiveStop(marketplace, 'listing_failed', 'fold_tool_result_unreadable', 'Fold drafted-listings result had no structured content')
+  }
+  const all = Array.isArray(drafted.listings) ? drafted.listings.filter(isPlainObject) : []
+  const mine = all.filter((listing) => listing.platform === marketplace && (only === null || only.has(listing.listing_id)))
+  const otherMarketplaceListings = all
+    .filter((listing) => listing.platform !== marketplace)
+    .map((listing) => ({ listing_id: listing.listing_id ?? null, platform: listing.platform ?? null }))
+  const missing = only === null ? [] : [...only].filter((id) => !mine.some((listing) => listing.listing_id === id))
+
+  if (mine.length === 0) {
+    const report = goLiveReport(marketplace, {
+      outcome: 'nothing_drafted',
+      other_marketplace_listings: otherMarketplaceListings,
+      ...(missing.length > 0 ? { not_drafted_listing_ids: missing } : {}),
+    })
+    return { marketplace, outcome: report.outcome, report, state_path: null, fold_calls: [], fold_calls_path: null, results_path: null, next: 'done' }
+  }
+
+  let capability
+  try {
+    capability = await createCapability({ ...capabilityOptions, ...browser, profile: profile ?? defaultProfile() })
+  } catch (error) {
+    if (error instanceof TypeError) throw error
+    return goLiveStop(marketplace, 'browser_unavailable', errorCode(error, 'browser_provider_unavailable'), errorMessage(error))
+  }
+
+  const listings = []
+  const foldCalls = []
+  const workspace = await privateTempDir(GO_LIVE_WORKSPACE_PREFIX)
+  const statePath = path.join(workspace, GO_LIVE_STATE_FILE)
+  const pressedSoFar = () => [...new Set([...prior.ids, ...listings.filter((entry) => entry.pressed === true).map((entry) => entry.listing_id)])]
+
+  /**
+   * Records one listing's result and, before the next listing is touched, writes the state with
+   * every press and every mark_live call so far — a throw or timeout later never loses a press.
+   */
+  async function record(entry) {
+    listings.push(entry)
+    await writeJsonPrivate(statePath, {
+      state_version: GO_LIVE_STATE_VERSION,
+      kind: 'go_live',
+      marketplace,
+      state_path: statePath,
+      phase: 'in_progress',
+      report: goLiveReport(marketplace, { outcome: 'in_progress', listings }),
+      pressed_listing_ids: pressedSoFar(),
+      fold_calls: foldCalls,
+    })
+  }
+
+  for (const listing of mine) {
+    if (phaseBudgetMs - (Date.now() - startedAt) < GO_LIVE_MIN_REMAINING_MS && listings.length > 0) {
+      await record({
+        listing_id: listing.listing_id,
+        ...(nonEmptyString(listing.sku) ? { sku: listing.sku } : {}),
+        draft_url: listing.draft_url ?? null,
+        outcome: 'not_attempted',
+        message: 'Left for the next go-live call so this one finishes inside its time budget.',
+      })
+      continue
+    }
+    // A listing pressed in any earlier call is never pressed again: read-only proof only.
+    const result = await capability.goLive({
+      listing_id: listing.listing_id,
+      sku: listing.sku,
+      draft_url: listing.draft_url,
+      ...(prior.ids.has(listing.listing_id) ? { reconcileOnly: true } : {}),
+    })
+    const entry = { ...result }
+    if (entry.sku === null || entry.sku === undefined) delete entry.sku
+    if (marketplace === 'vinted' && nonEmptyString(listing.sku)) entry.sku = listing.sku
+    if (entry.outcome === 'live') {
+      entry.recorded = false
+      foldCalls.push({ name: 'mark_live', args: { listing_id: listing.listing_id, listing_url: entry.public_url } })
+    }
+    await record(entry)
+  }
+
+  const callFiles = await writeFoldCallFile(workspace, foldCalls)
+  const leftover = listings.some((entry) => entry.outcome === 'not_attempted')
+  const report = goLiveReport(marketplace, {
+    outcome: leftover ? 'partial' : 'completed',
+    next: leftover ? 'continue' : 'done',
+    listings,
+    other_marketplace_listings: otherMarketplaceListings,
+    ...(missing.length > 0 ? { not_drafted_listing_ids: missing } : {}),
+    state_path: statePath,
+    results_path: callFiles.results_path,
+  })
+  if (leftover) {
+    report.resume_hint = 'Run the Fold calls, call list_drafted_listings again, and rerun with priorStatePath: this state_path and listingIds: the not_attempted ids'
+    report.not_attempted_listing_ids = listings.filter((entry) => entry.outcome === 'not_attempted').map((entry) => entry.listing_id)
+  }
+  const pressedIds = pressedSoFar()
+  await writeJsonPrivate(statePath, {
+    state_version: GO_LIVE_STATE_VERSION,
+    kind: 'go_live',
+    marketplace,
+    state_path: statePath,
+    phase: 'awaiting_fold',
+    report,
+    pressed_listing_ids: pressedIds,
+    fold_calls: foldCalls,
+    ...callFiles,
+  })
+  return {
+    marketplace,
+    outcome: report.outcome,
+    report,
+    state_path: statePath,
+    fold_calls: foldCalls,
+    ...callFiles,
+    next: foldCalls.length > 0 ? 'call_fold' : report.next,
+  }
+}
+
+/**
+ * Takes Fold-recorded Vinted drafts live. One `js` call. `draftedPath` holds the raw
+ * `list_drafted_listings` result; `listingIds`, when given, limits the run to those listings (the
+ * ones this run drafted, for "post these live"). Returns `{ report, fold_calls, fold_calls_path,
+ * results_path, state_path, next }`; `next` is `'call_fold'` when there are `mark_live` calls.
+ */
+export async function vintedGoLive(input = {}) {
+  return runGoLive('vinted', input, createVintedGoLiveCapabilityForProvider, createAuthenticatedVintedTargetProfile)
+}
+
+/** The Depop sibling of `vintedGoLive`: Post on each recorded draft, proven by SKU. */
+export async function depopGoLive(input = {}) {
+  return runGoLive('depop', input, createDepopGoLiveCapabilityForProvider, createAuthenticatedDepopTargetProfile)
+}
+
+async function summarizeGoLive({ statePath, resultsPath }) {
+  const read = await tryReadJson(statePath)
+  if (!read.ok) return stateInvalid('unknown', read.reason)
+  const state = read.value
+  const marketplace = GO_LIVE_MARKETPLACES.has(state?.marketplace) ? state.marketplace : 'unknown'
+  if (state.state_path !== statePath || path.basename(statePath) !== GO_LIVE_STATE_FILE) {
+    return stateInvalid(marketplace, 'state_path does not match the file being read')
+  }
+  const directory = path.dirname(statePath)
+  const workspaceError = await validatePrivateWorkspace({
+    workspaceDir: directory,
+    statePath,
+    prefix: GO_LIVE_WORKSPACE_PREFIX,
+    stateFile: GO_LIVE_STATE_FILE,
+  })
+  if (workspaceError !== null) return stateInvalid(marketplace, workspaceError)
+  if (!pathInside(directory, resultsPath)) return resultsPathOutsideWorkspace(marketplace, resultsPath, directory)
+  if (nonEmptyString(state.results_path) && state.results_path !== resultsPath) {
+    return resultsPathMismatch(marketplace, state.results_path, resultsPath)
+  }
+  if (state.phase === 'summarized' && isPlainObject(state.summary)) return state.summary
+  if (state.phase !== 'awaiting_fold' || !isPlainObject(state.report) || !Array.isArray(state.fold_calls)) {
+    return stateInvalid(marketplace, 'state is not awaiting Fold results')
+  }
+  const report = clone(state.report)
+  const foldErrors = []
+  const answers = await readResultsForCalls(resultsPath, state.fold_calls)
+  for (const [index, call] of state.fold_calls.entries()) {
+    if (call.name !== 'mark_live') continue
+    const result = answers[index].result
+    const listing = report.listings.find((entry) =>
+      entry.outcome === 'live' && entry.listing_id === call.args.listing_id && entry.public_url === call.args.listing_url
+    )
+    const failed = foldFailureFromResult(result)
+    if (listing === undefined) {
+      if (failed !== null) foldErrors.push({ tool: call.name, listing_id: call.args.listing_id, ...failed })
+      continue
+    }
+    if (failed !== null) {
+      Object.assign(listing, { outcome: 'live_unrecorded', failure_code: failed.failure_code, reason: failed.reason })
+      foldErrors.push({ tool: call.name, listing_id: listing.listing_id, ...failed })
+      continue
+    }
+    const outcome = structuredFrom(result).outcome
+    if (LIVE_RECORDED.has(outcome)) {
+      listing.recorded = true
+      listing.fold_outcome = outcome
+    } else {
+      Object.assign(listing, {
+        outcome: 'live_unrecorded',
+        fold_outcome: typeof outcome === 'string' ? outcome : null,
+        failure_code: 'fold_mark_live_refused',
+        reason: `Fold did not record the live listing: ${outcome ?? 'unknown'}`,
+      })
+      foldErrors.push({ tool: call.name, listing_id: listing.listing_id, failure_code: listing.failure_code, reason: listing.reason })
+    }
+  }
+  if (foldErrors.length > 0) report.fold_errors = foldErrors
+  report.summarized = true
+  report.summary_text = goLiveSummaryText(report)
+  state.phase = 'summarized'
+  state.summary = report
+  await writeJsonPrivate(statePath, state)
+  return report
 }

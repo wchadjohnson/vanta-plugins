@@ -38,6 +38,9 @@ export const DRAFT_BATCH_OUTCOMES = Object.freeze({
   needsManualCheck: 'needs_manual_check',
   existingDraft: 'existing_draft',
   awaitingConfirmation: 'awaiting_save_confirmation',
+  // Fold held the listing (vanta-fold#371): its old draft from a Redo must be deleted first. The new
+  // draft exists; it is recorded once the cleanup's report_delist closes the old one.
+  oldDraftPendingDeletion: 'old_draft_pending_deletion',
 })
 
 /** Calls that may look for a pressed-but-unconfirmed save before it is handed to the seller. */
@@ -53,7 +56,7 @@ export const DRAFT_BATCH_REPORT_VERSION = 'fold-draft-batch/2'
 const O = DRAFT_BATCH_OUTCOMES
 /** Outcomes that stop the run: the marketplace may hold state nobody has accounted for. */
 const STOPPING = new Set([O.ambiguous, O.blocked, O.needsManualCheck])
-const AWAITING_RECORD = new Set([O.draftVerified, O.draftUnrecorded])
+const AWAITING_RECORD = new Set([O.draftVerified, O.draftUnrecorded, O.oldDraftPendingDeletion])
 
 function assertObject(value, label) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -276,6 +279,10 @@ export function recordDraftResult(report, listingId, foldResult) {
     item.outcome = O.recorded
     item.fold_outcome = outcome
     delete item.reason
+  } else if (outcome === O.oldDraftPendingDeletion) {
+    item.outcome = O.oldDraftPendingDeletion
+    item.fold_outcome = outcome
+    item.reason = 'Fold holds this listing until its old draft (from a Redo) is deleted; run the cleanup, then record it'
   } else {
     item.outcome = O.draftUnrecorded
     item.reason =

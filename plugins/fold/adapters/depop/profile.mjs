@@ -352,6 +352,70 @@ const DEPOP_DRAFT_VIEWS = Object.freeze([
   Object.freeze({ id: 'scheduled', path: '/sellinghub/drafts/scheduled/' }),
 ])
 
+/** A Depop draft edit path whose last segment is a real UUID (case-insensitive). */
+const DEPOP_DRAFT_EDIT_UUID_PATH =
+  /^\/sellinghub\/drafts\/edit\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?$/i
+
+/**
+ * Taking a draft live, captured 2026-10-04 on throwaway test drafts (posted, captured, then
+ * deleted; live capture 2026-10-04):
+ *
+ * - The draft edit page `/sellinghub/drafts/edit/{uuid}/` ("Edit Draft - Depop", heading "Draft")
+ *   carries `button[type=submit]` "Post" — the one go-live control — plus "Update draft"
+ *   (type=button) and "Delete" (data-testid=buttonLink), which is ALSO type=submit. So Post is
+ *   matched by its exact name and cross-checked among the submit buttons, never by type alone.
+ * - Incomplete draft: Post is blocked by inline validation ("This field is required" under each
+ *   missing field); the URL stays on the edit page and no dialog opens.
+ * - Complete draft: no confirmation dialog; redirects to `/products/create/success/?productId={n}`
+ *   ("Nice! It's listed") with a link "View listing" -> `/products/{slug}/manage/`.
+ * - Public URL `/products/{slug}/` (for the owner it redirects to `/products/{slug}/manage/`).
+ *   Fold records the normalised `/products/{slug}/`; never `/products/create...` or
+ *   `/products/edit/...`.
+ * - Active/Selling `/sellinghub/selling/active/` lists the item with `SKU: {sku}` and a link to
+ *   `/products/{slug}/manage/` — the SKU fallback, and the live proof.
+ * - The draft is consumed once posted (gone from Drafts).
+ */
+const GO_LIVE = Object.freeze({
+  draftPathPattern: DEPOP_DRAFT_EDIT_UUID_PATH,
+  draftHeading: Object.freeze({ role: 'heading', name: 'Draft' }),
+  postAction: Object.freeze({ role: 'button', name: 'Post' }),
+  submitSelector: 'button[type="submit"]',
+  neverClick: Object.freeze(['Update draft', 'Delete']),
+  successPathPattern: /^\/products\/create\/success\/?$/,
+  viewListingLink: Object.freeze({ role: 'link', name: 'View listing' }),
+  publicPathPattern: /^\/products\/([^/]+)(?:\/manage)?\/?$/,
+  reservedSlugs: Object.freeze(['create', 'edit']),
+  activePath: DEPOP_ACTIVE_SELLING_PATH,
+  activeRowSkuSelector: DELIST_ROW_SKU_SELECTOR,
+  requiredErrorText: 'This field is required',
+  requiredErrorSelector: 'p, span, div',
+  invalidFieldSelector: '[aria-invalid="true"]',
+})
+
+/**
+ * Deleting a drafted sibling after a sale or a Delist all, captured 2026-10-04 on throwaway test
+ * drafts (live draft-delete capture, 2026-10-04):
+ *
+ * - On `/sellinghub/drafts/edit/{uuid}/`, `button[data-testid="buttonLink"]` "Delete" (type=submit,
+ *   like Post) opens a `role=dialog` "Delete draft" — "Are you sure you want to delete this draft?
+ *   You won't be able to recover it." — with Close, Cancel and "Delete draft" (all type=submit).
+ *   Confirm is the exact text "Delete draft". It then navigates to the drafts list.
+ * - Once deleted, the edit URL shows "There was a problem getting the draft details" — the deleted
+ *   marker, and the already-deleted marker on a later run.
+ * - Post (go-live) is on the same page; the delete path matches by test id and exact text only and
+ *   refuses Post, Update draft, Close and Cancel by name.
+ */
+const DRAFT_DELETE = Object.freeze({
+  draftPathPattern: DEPOP_DRAFT_EDIT_UUID_PATH,
+  draftHeading: Object.freeze({ role: 'heading', name: 'Draft' }),
+  deleteControl: Object.freeze({ testId: 'buttonLink', name: 'Delete' }),
+  dialog: Object.freeze({ role: 'dialog', name: 'Delete draft' }),
+  confirmAction: Object.freeze({ role: 'button', name: 'Delete draft' }),
+  neverClick: Object.freeze(['Post', 'Update draft', 'Close', 'Cancel']),
+  goneText: 'There was a problem getting the draft details',
+  goneTextSelector: 'h1, h2, h3, h4, p, span, div',
+})
+
 function requiredString(value, name) {
   if (typeof value !== 'string' || value.trim() === '') {
     throw new TypeError(`${name} must be a non-empty string`)
@@ -658,6 +722,8 @@ export function createDepopTargetProfile(options = {}) {
         ),
       }),
     }),
+    // Real Depop only: the simulator models no go-live surface.
+    ...(kind === 'depop' ? { goLive: GO_LIVE, draftDelete: DRAFT_DELETE } : {}),
     fields: mergedFields({
       ...(kind === 'depop' ? AUTHENTICATED_DEPOP_FIELDS : {}),
       ...options.fields,
@@ -695,6 +761,54 @@ export function createDepopSimulatorTargetProfile(options = {}) {
     maxPhotos: options.maxPhotos ?? 4,
     fields: { ...SIMULATOR_FIELD_OVERRIDES, ...options.fields },
   })
+}
+
+/**
+ * The draft URL Fold recorded, normalised, when it is exactly a Depop draft edit URL: https on the
+ * profile's own origin, `/sellinghub/drafts/edit/{uuid}/`, no credentials, query or fragment.
+ * Anything else is null, and the go-live capability refuses it before navigating.
+ */
+export function depopGoLiveDraftUrl(value, profile) {
+  return exactDraftUrl(value, profile, profile?.goLive?.draftPathPattern)
+}
+
+/** The same exact-shape check for the draft-delete path, against its own profile section. */
+export function depopDeleteDraftUrl(value, profile) {
+  return exactDraftUrl(value, profile, profile?.draftDelete?.draftPathPattern)
+}
+
+function exactDraftUrl(value, profile, pattern) {
+  if (typeof value !== 'string' || !(pattern instanceof RegExp)) return null
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:' || url.origin !== profile.origin) return null
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') return null
+  if (!pattern.test(url.pathname)) return null
+  const path = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`
+  return new URL(path, profile.origin).toString()
+}
+
+/**
+ * The normalised public URL `{origin}/products/{slug}/` for a Depop product URL or path
+ * (`/products/{slug}/` or the owner's `/products/{slug}/manage/`), else null. Never
+ * `/products/create...` or `/products/edit/...`.
+ */
+export function depopPublicProductUrl(value, profile) {
+  if (typeof value !== 'string' || !profile?.goLive) return null
+  let url
+  try {
+    url = new URL(value, profile.origin)
+  } catch {
+    return null
+  }
+  if (url.origin !== profile.origin) return null
+  const slug = profile.goLive.publicPathPattern.exec(url.pathname)?.[1]
+  if (slug === undefined || profile.goLive.reservedSlugs.includes(slug)) return null
+  return new URL(`/products/${slug}/`, profile.origin).toString()
 }
 
 export function isLiveActionName(value) {

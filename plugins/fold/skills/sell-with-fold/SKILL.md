@@ -1,6 +1,6 @@
 ---
 name: sell-with-fold
-description: Use when someone wants to copy greenlit Fold listings to a resale platform, mark a listing sold, or keep Fold in sync with resale activity.
+description: Use when someone wants to copy greenlit Fold listings to a resale platform as drafts (the default), make drafts live only when they explicitly ask, mark a listing sold so its drafted copies are cleaned up and live copies taken down, or keep Fold in sync with resale activity.
 ---
 
 # Sell with Fold
@@ -12,8 +12,8 @@ sale back to Fold.
 ## First: are Fold's tools connected?
 
 Before anything else, check that Fold's MCP tools are available to you (`mcp__fold__*` —
-`list_ready_listings`, `export_depop_csv`, `report_csv_upload`, `mark_published`, `mark_sold`; in a
-host that defers tools, look them up first). If they are not, tell the seller Fold needs them to sign
+`list_ready_listings`, `export_depop_csv`, `report_csv_upload`, `mark_published`, `mark_sold`, and
+for going live `list_drafted_listings`, `mark_live`; in a host that defers tools, look them up first). If they are not, tell the seller Fold needs them to sign
 in — in ChatGPT: **Plugins → Fold → sign in** (or **Reconnect**); after a plugin update ChatGPT may
 ask for this again — and **stop**. Never read the Fold web page, a Fold browser tab or a screenshot as
 a substitute for `list_ready_listings`, and never infer greenlit, ready or published status from the
@@ -23,8 +23,14 @@ Fold UI. Only Fold's tools answer those questions.
 
 - “Greenlit,” “approved,” and “ready” refer only to listings returned by the current
   `list_ready_listings` call. Never infer approval from prior conversation or other Fold data.
-- “Copy,” “post,” or “list” means create and independently verify one private draft. It never means
-  make the listing public.
+- “Copy,” “post,” or “list” means create and independently verify one private draft. On its own it
+  never means make the listing public.
+- **Live only on explicit live wording.** Only a request that itself says the listings should be
+  live — “post these live”, “make my Vinted drafts live”, “publish live”, “take them live” —
+  authorizes going live, and only for the listings and marketplaces it names. Without that wording,
+  never go live: drafts are the default, and an ambiguous request stays drafts (ask if unsure;
+  never assume). Earlier conversation, greenlighting in Fold, or a draft run finishing is not live
+  consent. See **Make drafts live** below.
 - “Sold” means run the sold workflow only after one verified sale signal identifies one Fold
   listing.
 - If several qualified resale-platform adapters are available and the user has not named a
@@ -56,14 +62,16 @@ so "I don't currently see it" is not evidence it is absent:
 
 This plugin's local code lives at these paths, relative to this plugin's root — never search for one
 of these by name, they are exactly here. Fold's own tools (`list_ready_listings`, `mark_sold`,
-`mark_published`, `export_depop_csv`, `report_csv_upload`) come from the Fold MCP server, not a local
-file.
+`mark_published`, `export_depop_csv`, `report_csv_upload`, `list_drafted_listings`, `mark_live`) come
+from the Fold MCP server, not a local file.
 
 - `workflows/post-drafts.mjs` — the draft-posting phases `depopPrepare`, `depopUpload`,
-  `vintedDraft`, `summarizeResults`, and `codexBrowser`. **Posting drafts to Depop (bulk) or Vinted
-  means running these phases and nothing else** — see **Post drafts** below. Do not import or call
-  `exportDepopCsvBatch`, `importCsvBatch`, `runDraftBatch`, `recordDraftResult` or a provider
-  factory yourself for that; the phases wire them in the right order.
+  `vintedDraft`, `summarizeResults`, and `codexBrowser`, plus the go-live phases `vintedGoLive` and
+  `depopGoLive`. **Posting drafts to Depop (bulk) or Vinted means running these phases and nothing
+  else** — see **Post drafts** below; **going live means running the go-live phases and nothing
+  else** — see **Make drafts live**. Do not import or call `exportDepopCsvBatch`, `importCsvBatch`,
+  `runDraftBatch`, `recordDraftResult`, a go-live capability or a provider factory yourself; the
+  phases wire them in the right order.
 - `workflows/draft-batch.mjs` — `acceptExistingDraft`, for a Vinted `existing_draft` the seller
   confirmed (see the outcomes below)
 - `workflows/lifecycle.mjs` — `saveAndVerifyDraft`, for Depop per-field creation only
@@ -130,7 +138,30 @@ open **is** the consent to use that logged-in tab and the seller's authenticated
 "may I use your logged-in tab" or any other confirmation. Greenlighting in Fold is the seller's
 approval of the listings. State the plan in one sentence — how many listings, which marketplace,
 private drafts, never posted — then call. Still drafts only: never Post, Publish, Upload-live, Make
-live or Ready to post; never retry a failed upload; never re-upload a pending row.
+live or Ready to post; never retry a failed upload; never re-upload a pending row. The draft phases
+never go live; only the go-live phases do, and only on explicit live wording (**Make drafts live**).
+
+**First, clear old drafts.** Before drafting, call `list_pending_delists`. Entries with `kind:
+'draft'` (a Redo or a Delist all the seller made in Fold; `sold_listing_id` is null) are old
+marketplace drafts Fold is holding listings back for — a held listing is left out of
+`list_ready_listings` and the CSV until its old draft is deleted. Delete them first with the
+delist phase for that marketplace, `draftsOnly: true`, as in `sold-with-fold`'s **Take down open
+copies** (pending file, phase, then its `report_delist` call). This is the seller's own Redo or
+Delist intent, so no live wording is needed — and `draftsOnly` never takes anything live or down
+beyond those drafts. Tell the seller in one line that the old drafts were cleared, then continue with
+`list_ready_listings` / the export as below. For example, on Depop in the Codex app:
+
+```js
+var del = await import(`${root}/workflows/delist-phases.mjs`)
+var cleared = await del.depopDelist({
+  browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+  pendingPath: '<the pending.json path exec printed>',
+  priorStatePath: <the previous delist call's cleared.state_path on a rerun, else omit>,
+  listingIds: <omit: every draft-kind entry for this marketplace>,
+  draftsOnly: true,
+})
+cleared
+```
 
 **Phases, never one long run.** Posting is a short sequence of phases from
 `workflows/post-drafts.mjs`. Each browser phase does all of its browser work inside the one call that
@@ -350,6 +381,11 @@ when it named no Fold calls. Say plainly what `report.summary_text` says, then e
   `Field_name.picture_Hero_url`). A rejected file is a defect in the export, not something to patch.
   `bulk_listing_platform_error` is the only case where a retry is reasonable — ask the user, never
   retry yourself.
+- `old_draft_pending_deletion` — the new draft exists (`listing_url`) but Fold did not record it:
+  Fold holds the listing until its old draft from a Redo is deleted. Say "old draft still to
+  delete", run the cleanup above (**First, clear old drafts**), then call `mark_published({
+  listing_id, listing_url, visibility: 'draft' })` for it. Neither recorded nor failed; never
+  re-draft it.
 - `draft_unrecorded` — the draft exists (`listing_url`) but Fold did not record it; a later run with
   the same report records it, never re-drafts it.
 - Vinted: `rejected` (refused before browser use — Fold could not supply Vinted's ids; nothing was
@@ -374,9 +410,132 @@ delivered file keeps its rows held until a later run matches their drafts by SKU
 offer to post those separately; they are not failures. `report.fold_errors` lists Fold calls that
 failed; they are never retried.
 
-Never target Post, Publish, List, Make live, Ready to post or Vinted's **Upload** (it publishes). The
-capabilities refuse every live control and press only Depop's file upload or Vinted's Save draft.
-The seller posts drafts inside the marketplace.
+In the draft phases, never target Post, Publish, List, Make live, Ready to post or Vinted's
+**Upload** (it publishes). The draft capabilities refuse every live control and press only Depop's
+file upload or Vinted's Save draft. Without explicit live wording the seller posts drafts inside the
+marketplace.
+
+## Make drafts live
+
+**Only on explicit live wording** (see **Understand the request**). Without it, never run a go-live
+phase, and never press Post, Upload or any live control yourself — by hand, by script, or by
+another tool. With it, the go-live phases are the only way: `vintedGoLive` and `depopGoLive` in
+`workflows/post-drafts.mjs`. State the plan in one sentence — how many listings, which marketplace,
+going live publicly — then call.
+
+What a go-live phase does, per listing, inside one `js` call: it takes the exact `draft_url` Fold
+recorded (`list_drafted_listings`), refuses it unless it is that marketplace's draft edit URL
+(Vinted `https://www.vinted.com/items/{id}/edit`, Depop
+`https://www.depop.com/sellinghub/drafts/edit/{uuid}/`), opens it, proves it is that listing's draft
+(Vinted: the URL's item id with Save draft and Delete draft present; Depop: the SKU field equals the
+listing's SKU), presses the one go-live control once (Vinted **Upload**; Depop **Post**, never
+Delete or Update draft), confirms the page changed, verifies the public listing (Vinted
+`/items/{id}-{slug}` with the owner's controls; Depop the SKU on Active/Selling and
+`/products/{slug}/`), and names one `mark_live` call with the public URL. A press is never
+repeated; a draft that is already live is recorded without pressing anything.
+
+Two flows:
+
+- **Draft, then live, in one run** ("post these live"): run **Post drafts** to the end as usual
+  (the draft phases record each draft with `mark_published` and `visibility: 'draft'`). Collect the
+  `listing_id`s whose final outcome is `recorded` — only those go live. Then call
+  `list_drafted_listings`, and run the go-live phase for that marketplace with
+  `listingIds` set to them → run its `fold_calls` (`mark_live`) → `summarizeResults`.
+- **Live only, on existing drafts** ("make my Vinted drafts live"): call `list_drafted_listings`,
+  then run the go-live phase for the named marketplace (no `listingIds`: every Fold-recorded draft
+  there; or the ids of the listings the seller named) → `mark_live` calls → `summarizeResults`.
+
+**Every rerun passes the previous run's state** as `priorStatePath: live.state_path`. A listing any
+earlier call pressed is never pressed again — it only gets read-only proof that it is live, and if
+that fails it stays `unconfirmed` and the seller checks it by hand. While the report's `next` is
+`'continue'` (the phase stopped to stay inside its time budget), call `list_drafted_listings`
+again and rerun with `priorStatePath` and `listingIds: live.report.not_attempted_listing_ids`.
+Stop on `'done'`. Never rerun to "retry" an `unconfirmed` listing.
+
+The drafted-listings file must be exactly as the exec snippet below makes it — `drafted.json` in a
+`mktemp -d` folder named `fold-drafted-*` under the temp directory, written by
+`writePrivateJson` — or the phase refuses it.
+
+### Codex app (in-app Browser)
+
+Same runtime rules as **Post drafts → Codex app**: the exec preamble above, every browser phase
+awaited to the end inside one `js` call with `timeout_ms: 300000` (`GO_LIVE_JS_TIMEOUT_MS`), its
+browser options built in that same call.
+
+1. **`exec` — drafted listings.** After the preamble:
+
+   ```js
+   const dir = (await sh(`umask 077; mktemp -d "\${TMPDIR:-/tmp}/fold-drafted-XXXXXXXX"`)).output.trim()
+   const drafted = await callFold('list_drafted_listings', {})
+   await writePrivateJson(`${dir}/drafted.json`, drafted)
+   text(`${dir}/drafted.json`)
+   ```
+
+2. **`js` with `timeout_ms: 300000` — go live.** For Vinted (Depop: `post.depopGoLive`, with the
+   open Depop tab):
+
+   ```js
+   var root = '<installed plugin root>'
+   var post = await import(`${root}/workflows/post-drafts.mjs`)
+   var browserId = '<browser id of the open Vinted tab>'
+   var tabId = '<that tab id>'
+   var onTabChange = (id) => { tabId = id }
+   var live = await post.vintedGoLive({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+     draftedPath: '<the drafted.json path exec printed>',
+     priorStatePath: <the previous go-live call's live.state_path on a rerun, else omit>,
+     listingIds: <the recorded listing ids for "post these live", or omit for all drafts>,
+   })
+   live
+   ```
+
+   ```js
+   var live = await post.depopGoLive({
+     browser: await post.codexBrowser({ cua, browserId, tabId, onTabChange }),
+     draftedPath: '<the drafted.json path exec printed>',
+     priorStatePath: <the previous go-live call's live.state_path on a rerun, else omit>,
+     listingIds: <the recorded listing ids for "post these live", or omit for all drafts>,
+   })
+   live
+   ```
+
+3. If `live.next` is `'call_fold'`, **`exec` — run the Fold calls** with `live.fold_calls_path`
+   (block above), then **`js`**:
+
+   ```js
+   var liveSummary = await post.summarizeResults({ statePath: live.state_path, resultsPath: live.results_path })
+   liveSummary
+   ```
+
+   Otherwise the report is `live.report`.
+
+With Claude in Chrome and a live bridge, run the same phases with `browser: { provider:
+'claude-in-chrome', callTool, tabId }`, saving `list_drafted_listings` to a private file you pass as
+`draftedPath`. Without a live bridge there is no go-live path: say so and stop; never press a live
+control by hand.
+
+### Go-live report
+
+Say plainly what `report.summary_text` says — it names every public link — then each entry of
+`report.listings` by `outcome`:
+
+- `live` — public on the marketplace at `public_url` (give the link). `recorded: true` once Fold
+  recorded it (`fold_outcome` `live` or `already_live`); `reconciled: true` means it was already live
+  and nothing was pressed; `located_by: 'sku'` means Depop's success page gave no link and the
+  listing was found by SKU on Active/Selling.
+- `live_unrecorded` — public on the marketplace, but Fold refused `mark_live` (`fold_outcome`,
+  `reason`); give the link and the reason. Never retried.
+- `incomplete` (Depop) — Depop's own validation blocked Post; nothing was posted. Name `fields` when
+  present; the seller fills them in Depop, then asks again.
+- `mismatch` — the recorded URL was not a draft URL, or the page was not this listing's draft (wrong
+  item id, wrong SKU, a missing or ambiguous control). Nothing was pressed.
+- `unconfirmed` — the control was pressed once but going live could not be proven (no page change,
+  or the public page did not show it). It was **not** pressed again. Tell the seller to check the
+  marketplace; a later go-live run records it without pressing if it is live.
+- `error` — something failed before anything was pressed; give `failure_code` and `message`.
+- `not_attempted` — left for the next go-live call (`next: 'continue'`).
+
+`report.not_drafted_listing_ids` names requested listings Fold has no draft for (draft them first).
 
 ## Bulk listing without a live code-execution bridge (native browser tools)
 
@@ -394,7 +553,8 @@ Exporting onto a page that then fails leaves listings held with nothing uploaded
    or reorder anything, including the three template header lines.
 3. If `awaiting_confirmation` has rows with `delivered: true`, an earlier upload was never matched:
    look for each one's `sku` in the draft views (step E) and `mark_published` the ones that match
-   exactly one draft. Leave `delivered: false` rows alone — another export holds them.
+   exactly one draft (with `visibility: 'draft'`). Leave `delivered: false` rows alone — another
+   export holds them.
 4. Deliver the file (step C) and read the alert (step D).
 5. Call `report_csv_upload({ submission_id, uploaded, note })` **exactly once** (skip it if
    `submission_id` is null): `uploaded: false` with a short `note` if the file was never delivered
@@ -489,9 +649,9 @@ E. On accepted (or unconfirmed), poll for per-row outcomes by opening each of De
    seconds; wait for it to clear before reading a view as empty. A row under Incomplete is a successful import, not a failure.
 
    The moment a SKU pairs to exactly one stable draft URL — a **confirmed** outcome — call
-   `mark_published` once with that listing's exact `listing_id` and that URL as `listing_url`,
-   right here during polling rather than waiting for a later step. Do this only for a confirmed
-   pairing: never for a SKU still `pending_at_timeout`, never for `ambiguous` (two drafts share a
+   `mark_published` once with that listing's exact `listing_id`, that URL as `listing_url` and
+   `visibility: 'draft'`, right here during polling rather than waiting for a later step. Do this
+   only for a confirmed pairing: never for a SKU still `pending_at_timeout`, never for `ambiguous` (two drafts share a
    SKU), and never for a row this run cannot otherwise recognize. If the `mark_published` call
    itself fails, report that to the seller but do not fail or retry the import over it — this is
    best-effort enrichment of Fold's `external_url`, not a required step, and every other outcome in
@@ -559,8 +719,9 @@ Use this path only when **Choose how listings reach Depop** selects per-field cr
    correlation, exact target taxonomy after bounded equivalent-value normalization, and
    persisted-field/photo-order verification. A toast, attempted save, generic
    drafts-hub URL, validation error, or ambiguous browser state is not success.
-10. Only then call `mark_published` once with that listing's exact Fold `listing_id` and verified
-    draft URL. Its historical name means the verified external draft was created and recorded.
+10. Only then call `mark_published` once with that listing's exact Fold `listing_id`, verified
+    draft URL and `visibility: 'draft'`. Its historical name means the verified external draft was
+    created and recorded.
 11. Treat `published` and `already_published` as success and continue. Report every other Fold
     outcome as a refusal and stop the batch.
 12. On any adapter failure or ambiguity, do not retry. Stop and report verified drafts, Fold
@@ -616,8 +777,10 @@ qualified notification adapter must provide the exact Fold `listing_id` or match
 If the match is missing or ambiguous, explain the problem and do not call `mark_sold`. Otherwise,
 call `mark_sold` once with the verified identifier. Treat `already_sold` as a successful no-op. For
 `sold`, its `cascaded_listings` are the piece's other listings: take them down with the
-`sold-with-fold` skill's one consolidated approval, which deletes Depop and Vinted siblings and names
-the rest for the seller to remove. There are no durable retries.
+`sold-with-fold` skill's one consolidated approval. Each carries `kind`: drafted copies (`'draft'`)
+are deleted on Depop and Vinted at their recorded `draft_url`, live listings (`'live'`) are taken
+down, and other platforms are named for the seller to remove. A seller's **Delist all** in Fold is
+finished the same way, starting from `list_pending_delists`. Delists are never retried.
 
 ## Report the result
 

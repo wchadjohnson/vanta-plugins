@@ -1,7 +1,7 @@
 {
   "name": "fold",
-  "version": "0.5.10",
-  "description": "Create verified drafts from greenlit Fold listings",
+  "version": "0.6.0",
+  "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
   "displayName": "Fold",
   "author": {
     "name": "Vanta"

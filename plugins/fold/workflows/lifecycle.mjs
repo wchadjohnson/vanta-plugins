@@ -414,6 +414,7 @@ export async function publishApprovedBatch({ fold, adapter, resolveInference }) 
       foldResult = await fold.markPublished({
         listing_id: listing.listing_id,
         listing_url: draftResult.canonical_url,
+        visibility: 'draft',
       })
     } catch (error) {
       return batchReport(plan, {

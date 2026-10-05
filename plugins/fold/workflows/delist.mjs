@@ -222,3 +222,107 @@ export function delistResolutionGroups(results) {
   }
   return groups
 }
+
+// ---------------------------------------------------------------------------------------------
+// Drafted siblings (Fold kind 'draft'): deleted at the draft URL Fold recorded, never searched for
+// on Active/Selling. Live siblings (kind 'live') keep using `delistApprovedSiblings` above.
+// ---------------------------------------------------------------------------------------------
+
+/** Outcomes that mean the copy is gone from the marketplace, so Fold can close it as confirmed. */
+export const DELIST_CONFIRMED_OUTCOMES = Object.freeze(['deleted', 'already_deleted', 'not_found'])
+
+/**
+ * Deletes each drafted sibling, sequentially, never retrying. `draftCapability.deleteDraft` handles
+ * a sibling with a recorded `draft_url`. A sibling with no `draft_url` is found by its exact SKU in
+ * the drafts views only when `findCapability` (Depop's delist capability, with `findDraftSibling`
+ * and `deleteDraftRow`) is given; an ambiguous SKU stops that sibling. A SKU found in no drafts view
+ * may have been posted, so it is `not_found` only when `draftCapability.activeListing(sku)` (when
+ * present) reports it absent from Active/Selling — listed there it is `went_live`.
+ *
+ * `reconcileOnly: true` on a sibling (pressed in an earlier call) never presses anything.
+ * Never throws per sibling: every result is `{ listing_id, sku, kind: 'draft', outcome, pressed,
+ * message?, failure_code? }` with outcome `deleted | already_deleted | went_live | not_found |
+ * mismatch | unconfirmed | error`.
+ */
+export async function deleteDraftSiblings({ draftCapability, findCapability = null, siblings } = {}) {
+  assertObject(draftCapability, 'draftCapability')
+  if (typeof draftCapability.deleteDraft !== 'function') throw new TypeError('draftCapability.deleteDraft must be a function')
+  if (!Array.isArray(siblings)) throw new TypeError('siblings must be an array')
+  const results = []
+  for (const sibling of siblings) {
+    assertObject(sibling, 'sibling')
+    const base = { listing_id: sibling.listing_id, ...(nonEmptyString(sibling.sku) ? { sku: sibling.sku } : {}), kind: 'draft' }
+    if (nonEmptyString(sibling.draft_url)) {
+      results.push({ ...base, ...(await draftCapability.deleteDraft(sibling)), kind: 'draft' })
+      continue
+    }
+    if (findCapability === null || !nonEmptyString(sibling.sku)) {
+      results.push({
+        ...base,
+        outcome: 'mismatch',
+        pressed: false,
+        failure_code: 'draft_delete_url_missing',
+        message: 'Fold recorded no draft URL for this copy and it cannot be found by SKU here; nothing was clicked.',
+      })
+      continue
+    }
+    let clicked = false
+    try {
+      const found = await findCapability.findDraftSibling(sibling.sku)
+      if (!found.found) {
+        const active = typeof draftCapability.activeListing === 'function' ? await draftCapability.activeListing(sibling.sku) : 'absent'
+        if (active === 'listed') {
+          results.push({ ...base, outcome: 'went_live', pressed: false, message: 'No draft carries this SKU, but Active/Selling lists it: it was posted.' })
+        } else if (active === 'unknown') {
+          results.push({ ...base, outcome: 'error', pressed: false, failure_code: 'draft_delete_active_unreadable', message: 'No draft carries this SKU and Active/Selling could not be read to rule out a post; left open.' })
+        } else {
+          results.push({ ...base, outcome: 'not_found', pressed: false, message: 'No draft and no live listing carries this SKU; nothing to delete.' })
+        }
+        continue
+      }
+      if (sibling.reconcileOnly === true) {
+        results.push({ ...base, outcome: 'unconfirmed', pressed: false, failure_code: 'draft_delete_previously_pressed', message: 'A delete was pressed in an earlier call and the draft is still listed; nothing will be pressed again. Delete it by hand.' })
+        continue
+      }
+      clicked = true
+      await findCapability.deleteDraftRow({ ...found, sku: sibling.sku })
+      results.push({ ...base, outcome: 'deleted', pressed: true, surface: found.surface, message: 'Draft deleted from the drafts list.' })
+    } catch (error) {
+      const code = typeof error?.code === 'string' ? error.code : 'draft_delete_failed'
+      results.push({
+        ...base,
+        outcome: clicked ? 'unconfirmed' : code === 'delist_sku_ambiguous' ? 'mismatch' : 'error',
+        pressed: clicked,
+        failure_code: code,
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  return results
+}
+
+/** Maps a live takedown result from `delistApprovedSiblings` onto the same outcome vocabulary. */
+export function liveTakedownOutcome(result) {
+  assertObject(result, 'result')
+  const outcome = {
+    deleted: 'deleted',
+    not_found: 'not_found',
+    failed: 'error',
+    inference_required: 'inference_required',
+  }[result.status]
+  if (outcome === undefined) throw new TypeError(`result ${result.listing_id} has unknown status ${String(result.status)}`)
+  const { status, ...rest } = result
+  return { ...rest, kind: 'live', outcome }
+}
+
+/**
+ * The Fold calls a delist phase hands over: one `report_delist` with `resolution: 'confirmed'` for
+ * every copy proven gone. Every other copy is left open in Fold and reported to the seller.
+ */
+export function delistReportCalls(results) {
+  if (!Array.isArray(results)) throw new TypeError('results must be an array')
+  const confirmed = results
+    .filter((entry) => DELIST_CONFIRMED_OUTCOMES.includes(entry?.outcome))
+    .map((entry) => entry.listing_id)
+  return confirmed.length === 0 ? [] : [{ name: 'report_delist', args: { listing_ids: confirmed, resolution: 'confirmed' } }]
+}

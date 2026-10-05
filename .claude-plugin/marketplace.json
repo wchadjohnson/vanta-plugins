@@ -7,7 +7,7 @@
     {
       "name": "fold",
       "source": "./plugins/fold",
-      "description": "Create verified drafts from greenlit Fold listings",
+      "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
       "category": "Productivity"
     }
   ]

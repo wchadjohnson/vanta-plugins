@@ -8,6 +8,8 @@ import {
 import { createDepopBrowserCapability } from './browser-capability.mjs'
 import { createDepopBulkListingCapability } from './bulk-listing-capability.mjs'
 import { createDepopDelistCapability } from './delist-capability.mjs'
+import { createDepopDraftDeleteCapability } from './draft-delete-capability.mjs'
+import { createDepopGoLiveCapability } from './go-live-capability.mjs'
 
 function requiredObject(value, name) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -170,4 +172,32 @@ export async function createDepopDelistCapabilityForProvider(options = {}) {
     activePageSettleMs: options.activePageSettleMs,
     activePagePollMs: options.activePagePollMs,
   })
+}
+
+/**
+ * The go-live sibling: same transport selection and read-only probe, no write gate — each draft is
+ * reached by the exact URL Fold recorded and proven to be that draft (SKU) before Post is pressed.
+ */
+export async function createDepopGoLiveCapabilityForProvider(options = {}) {
+  const profile = requiredObject(options.profile, 'profile')
+  const tab = browserProviderTab(options)
+  await probeBrowserProvider({ tab, profile })
+  return createDepopGoLiveCapability({
+    tab,
+    profile,
+    pollMs: options.pollMs,
+    pollAttempts: options.pollAttempts,
+    activeReads: options.activeReads,
+  })
+}
+
+/**
+ * The draft-delete sibling: same transport selection and read-only probe, no write gate — each
+ * draft is reached by the exact URL Fold recorded and proven (SKU) before Delete is pressed.
+ */
+export async function createDepopDraftDeleteCapabilityForProvider(options = {}) {
+  const profile = requiredObject(options.profile, 'profile')
+  const tab = browserProviderTab(options)
+  await probeBrowserProvider({ tab, profile })
+  return createDepopDraftDeleteCapability({ tab, profile, pollMs: options.pollMs, pollAttempts: options.pollAttempts })
 }

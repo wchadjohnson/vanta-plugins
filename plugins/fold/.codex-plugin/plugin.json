@@ -1,7 +1,7 @@
 {
   "name": "fold",
-  "version": "0.5.10",
-  "description": "Create verified drafts from greenlit Fold listings",
+  "version": "0.6.0",
+  "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
   "author": {
     "name": "Vanta"
   },
@@ -15,8 +15,8 @@
   "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Fold",
-    "shortDescription": "Create verified resale drafts from greenlit Fold listings",
-    "longDescription": "Turns your greenlit Fold listings into private Depop and Vinted drafts — through Depop's own bulk importer or one listing at a time — and keeps Fold in sync when a piece sells, including taking it down everywhere else.",
+    "shortDescription": "Draft greenlit Fold listings; go live only when you ask",
+    "longDescription": "Turns your greenlit Fold listings into private Depop and Vinted drafts — through Depop's own bulk importer or one listing at a time. Drafts are the default; listings go live only when you explicitly ask. When a piece sells, or you choose Delist all, its drafted copies are deleted and its live listings taken down everywhere else, and Fold stays in sync.",
     "developerName": "Vanta",
     "category": "Productivity",
     "capabilities": [

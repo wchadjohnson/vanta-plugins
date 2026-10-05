@@ -7,6 +7,8 @@ import {
 } from '../shared/browser-provider-registry.mjs'
 import { createVintedBrowserCapability } from './browser-capability.mjs'
 import { createVintedDelistCapability } from './delist-capability.mjs'
+import { createVintedDraftDeleteCapability } from './draft-delete-capability.mjs'
+import { createVintedGoLiveCapability } from './go-live-capability.mjs'
 
 function requiredObject(value, name) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -61,4 +63,26 @@ export async function createVintedDelistCapabilityForProvider(options = {}) {
   const tab = browserProviderTab(options)
   await probeBrowserProvider({ tab, profile })
   return createVintedDelistCapability({ tab, profile, memberId: options.memberId, pollMs: options.pollMs })
+}
+
+/**
+ * The go-live sibling: same transport selection and read-only probe, no write gate — each draft is
+ * reached by the exact URL Fold recorded and proven to be that draft before Upload is pressed.
+ */
+export async function createVintedGoLiveCapabilityForProvider(options = {}) {
+  const profile = requiredObject(options.profile, 'profile')
+  const tab = browserProviderTab(options)
+  await probeBrowserProvider({ tab, profile })
+  return createVintedGoLiveCapability({ tab, profile, pollMs: options.pollMs, pollAttempts: options.pollAttempts })
+}
+
+/**
+ * The draft-delete sibling: same transport selection and read-only probe, no write gate — each
+ * draft is reached by the exact URL Fold recorded and proven before Delete draft is pressed.
+ */
+export async function createVintedDraftDeleteCapabilityForProvider(options = {}) {
+  const profile = requiredObject(options.profile, 'profile')
+  const tab = browserProviderTab(options)
+  await probeBrowserProvider({ tab, profile })
+  return createVintedDraftDeleteCapability({ tab, profile, pollMs: options.pollMs, pollAttempts: options.pollAttempts })
 }
