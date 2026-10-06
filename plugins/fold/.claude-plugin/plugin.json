@@ -1,7 +1,7 @@
 {
   "name": "fold",
-  "version": "0.6.0",
-  "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
+  "version": "0.7.0",
+  "description": "Draft ready Fold listings on Depop and Vinted and record sales; going live and removing copies once Fold turns them on for your marketplace. Fold checks every step",
   "displayName": "Fold",
   "author": {
     "name": "Vanta"

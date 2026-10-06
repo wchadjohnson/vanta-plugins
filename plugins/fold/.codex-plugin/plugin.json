@@ -1,7 +1,7 @@
 {
   "name": "fold",
-  "version": "0.6.0",
-  "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
+  "version": "0.7.0",
+  "description": "Draft ready Fold listings on Depop and Vinted and record sales; going live and removing copies once Fold turns them on for your marketplace. Fold checks every step",
   "author": {
     "name": "Vanta"
   },
@@ -15,21 +15,20 @@
   "mcpServers": "./.mcp.codex.json",
   "interface": {
     "displayName": "Fold",
-    "shortDescription": "Draft greenlit Fold listings; go live only when you ask",
-    "longDescription": "Turns your greenlit Fold listings into private Depop and Vinted drafts — through Depop's own bulk importer or one listing at a time. Drafts are the default; listings go live only when you explicitly ask. When a piece sells, or you choose Delist all, its drafted copies are deleted and its live listings taken down everywhere else, and Fold stays in sync.",
+    "shortDescription": "Draft ready Fold listings on Depop and Vinted",
+    "longDescription": "Puts your ready Fold listings on Depop and Vinted as private drafts, and records a sale when a piece sells. Going live and removing copies from a marketplace come once Fold turns them on for your marketplace. Fold gives every step and checks every result.",
     "developerName": "Vanta",
     "category": "Productivity",
     "capabilities": [
-      "Bulk listing drafts by CSV",
-      "Create verified drafts",
-      "Track sales",
+      "Create drafts",
+      "Record sales",
       "Update Fold"
     ],
     "websiteURL": "https://vanta-fold.vercel.app/",
     "defaultPrompt": [
       "Draft my ready Fold listings on Depop.",
-      "Put my ready Fold listings on Vinted as drafts.",
-      "Mark a Fold listing as sold."
+      "Draft my ready Fold listings on Vinted.",
+      "My Fold piece sold on Depop."
     ]
   }
 }

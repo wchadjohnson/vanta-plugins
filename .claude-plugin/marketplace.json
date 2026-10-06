@@ -7,7 +7,7 @@
     {
       "name": "fold",
       "source": "./plugins/fold",
-      "description": "Draft greenlit Fold listings, go live only on request, and clean up drafted copies after a sale",
+      "description": "Draft ready Fold listings on Depop and Vinted and record sales; going live and removing copies once Fold turns them on for your marketplace. Fold checks every step",
       "category": "Productivity"
     }
   ]
