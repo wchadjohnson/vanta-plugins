@@ -7,7 +7,7 @@
     {
       "name": "fold",
       "source": "./plugins/fold",
-      "description": "Draft ready Fold listings on Depop and Vinted and record sales; going live and removing copies once Fold turns them on for your marketplace. Fold checks every step",
+      "description": "Draft ready Fold listings on Depop and Vinted, take them live when you ask, record sales and remove the other copies. Fold checks every step",
       "category": "Productivity"
     }
   ]

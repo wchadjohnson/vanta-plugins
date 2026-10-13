@@ -1,9 +1,8 @@
 # Fold for ChatGPT and Claude
 
-Fold turns photos of your clothes into ready-to-post resale listings. This plugin connects your AI
-assistant to Fold, so it can put your ready listings on Depop and Vinted as drafts and record a sale
-when a piece sells. Going live and removing a piece's other copies come once Fold turns them on for
-your marketplace.
+Fold turns photos of your clothes into ready-to-post resale listings. This plugin, **Fold agent**,
+connects your AI assistant to Fold, so it can put your ready listings on Depop and Vinted as drafts,
+take them live when you ask, record a sale when a piece sells and remove that piece's other copies.
 
 Fold gives your assistant every step and checks every result. Drafts are the default — nothing goes
 live on a marketplace unless you ask.
@@ -12,21 +11,24 @@ live on a marketplace unless you ask.
 
 1. In the ChatGPT app, open **Customize** → **Plugins** → **Add** → **Add a marketplace**.
 2. For **Source**, enter `wchadjohnson/vanta-plugins` and choose **Add marketplace**.
-3. Open the **Personal** tab → **Vanta Plugins** → **Fold**, then choose **Install plugin**. Adding
+3. Open the **Personal** tab → **Vanta Plugins** → **Fold agent**, then choose **Install plugin**. Adding
    the marketplace alone doesn't install Fold.
 4. If a browser window opens, sign in to your Fold account and approve access.
 5. Turn on the ChatGPT Chrome extension, and in its settings turn on **Allow access to file URLs**
    so your listing photos can be uploaded.
 6. Use **Work mode** in the ChatGPT desktop app for marketplace tasks.
+7. When asked whether Fold agent may open a marketplace site, download a file or upload a file,
+   choose **Always allow**, or every step stops to ask again. On Windows expect three prompts on the
+   first run: site access, downloads and uploads.
 
 After updating Fold, ChatGPT may ask you to sign in to Fold again. If your assistant says it
-can't reach Fold, open **Plugins → Fold** and sign in (or choose **Reconnect**).
+can't reach Fold, open **Plugins → Fold agent** and sign in (or choose **Reconnect**).
 
 ## Install in Claude
 
 1. Open the Claude app → **Customize** → **Plugins** → **Add**, and add the marketplace
    `wchadjohnson/vanta-plugins`.
-2. Install **Fold**, then sign in to your Fold account when asked.
+2. Install **Fold agent**, then sign in to your Fold account when asked.
 
 ## Try it
 
@@ -34,8 +36,8 @@ can't reach Fold, open **Plugins → Fold** and sign in (or choose **Reconnect**
 - "Draft my ready Fold listings on Vinted."
 - "My jacket sold on Depop."
 
-Going live and removing copies from a marketplace work the same way, by asking Fold, once Fold
-turns them on for your marketplace.
+Going live and removing copies from a marketplace work the same way: ask Fold, e.g. **"Post my
+drafts live."**
 
 ## Stay in control
 

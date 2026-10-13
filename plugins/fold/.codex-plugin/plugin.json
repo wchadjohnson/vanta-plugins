@@ -1,7 +1,7 @@
 {
   "name": "fold",
-  "version": "0.7.0",
-  "description": "Draft ready Fold listings on Depop and Vinted and record sales; going live and removing copies once Fold turns them on for your marketplace. Fold checks every step",
+  "version": "0.9.0",
+  "description": "Import your live Depop and Vinted listings into Fold, draft ready Fold listings there, take them live when you ask, record sales and remove the other copies. Fold checks every step",
   "author": {
     "name": "Vanta"
   },
@@ -14,12 +14,13 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.codex.json",
   "interface": {
-    "displayName": "Fold",
-    "shortDescription": "Draft ready Fold listings on Depop and Vinted",
-    "longDescription": "Puts your ready Fold listings on Depop and Vinted as private drafts, and records a sale when a piece sells. Going live and removing copies from a marketplace come once Fold turns them on for your marketplace. Fold gives every step and checks every result.",
+    "displayName": "Fold agent",
+    "shortDescription": "Import and draft Fold listings on Depop and Vinted",
+    "longDescription": "Brings your live Depop and Vinted listings into Fold, puts your ready Fold listings on Depop and Vinted as private drafts, takes them live when you ask, records a sale when a piece sells and removes the other copies. Fold gives every step and checks every result.",
     "developerName": "Vanta",
     "category": "Productivity",
     "capabilities": [
+      "Import listings",
       "Create drafts",
       "Record sales",
       "Update Fold"
@@ -28,7 +29,8 @@
     "defaultPrompt": [
       "Draft my ready Fold listings on Depop.",
       "Draft my ready Fold listings on Vinted.",
-      "My Fold piece sold on Depop."
+      "My Fold piece sold on Depop.",
+      "Import my Depop listings."
     ]
   }
 }
