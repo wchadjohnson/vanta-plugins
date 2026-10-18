@@ -29,6 +29,15 @@ In Claude: use Claude in Chrome for the browser, with the Fold agent plugin conn
 If Fold's tools are not available, the seller needs to sign in to Fold again (in ChatGPT:
 **Plugins → Fold agent → sign in**).
 
+## Bring in photos
+
+If the seller has grouped photos into pieces by file name or folder, hand Fold their paths,
+unopened. Only view photos when the grouping is unclear or the seller asks you to look or write copy.
+For each piece, tell Fold who writes the copy. If you haven't viewed the photos and the seller
+hasn't asked you to write copy, say Fold writes it and send no title, description or price. If you write the copy
+yourself, say you are the writer and send all three: title, description and price.
+Photos attached in chat can still go to Fold as before.
+
 ## First thing to try
 
 Ask: **"Draft my ready Fold listings on Depop."** (or Vinted)
