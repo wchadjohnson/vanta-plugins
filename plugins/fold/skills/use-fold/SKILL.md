@@ -5,12 +5,8 @@ description: Use when someone wants to set up Fold, bring their live Depop or Vi
 
 # Use Fold
 
-Fold turns clothing photos into resale listings. This plugin, **Fold agent**, connects you to Fold
-so it can put the seller's ready listings on their marketplaces, such as Depop and Vinted.
-
-Fold gives you every step and checks every result. This skill only helps the seller get set up;
-it holds no rules of its own. When the seller asks for something, ask Fold and follow what it
-returns.
+Fold turns clothing photos into resale listings. **Fold agent** connects you to Fold for Depop and Vinted.
+Fold gives you every step and checks every result. This skill only helps the seller get set up; it holds no rules of its own. When the seller asks for something, ask Fold and follow what it returns.
 
 ## Get set up
 
@@ -31,19 +27,26 @@ If Fold's tools are not available, the seller needs to sign in to Fold again (in
 
 ## Bring in photos
 
-If the seller has grouped photos into pieces by file name or folder, hand Fold their paths,
-unopened. Only view photos when the grouping is unclear or the seller asks you to look or write copy.
-For each piece, tell Fold who writes the copy. If you haven't viewed the photos and the seller
-hasn't asked you to write copy, say Fold writes it and send no title, description or price. If you write the copy
-yourself, say you are the writer and send all three: title, description and price.
+If the seller has grouped photos into pieces by file name or folder, hand Fold their paths, unopened.
+Only view photos when the grouping is unclear or the seller asks you to look or write copy.
+For each piece, tell Fold who writes the copy. If you haven't viewed the photos and the seller hasn't asked you to write copy, say Fold writes it and send no title, description or price. If you write the copy yourself, say you are the writer and send all three: title, description and price.
 Photos attached in chat can still go to Fold as before.
 
 ## First thing to try
 
 Ask: **"Draft my ready Fold listings on Depop."** (or Vinted)
 
-Fold saves your ready listings as private drafts on that marketplace. Nothing goes live unless the
-seller asks for it.
+Fold saves your ready listings as private drafts on that marketplace. Nothing goes live unless the seller asks for it.
+
+For multiple marketplaces, launch one subagent per marketplace in parallel, each with no inherited conversation.
+Pass only `marketplace`, `listing_ids`, and "built-in browser"; no copy, manuals, docs, or other pasted context.
+In the built-in browser, if it exposes `tab.playwright`, "browser's file-upload action" uses the page's file chooser:
+```js
+const chooserPromise = tab.playwright.waitForEvent("filechooser", { timeoutMs: 10000 });
+await tab.playwright.locator('input[type="file"]').click();
+const chooser = await chooserPromise;
+await chooser.setFiles(photoPaths); // absolute local paths, in Fold's order
+```
 
 ## Bring in listings you already have
 
@@ -64,5 +67,3 @@ Tell Fold: **"My Fold piece sold on Vinted."** Fold records the sale and lists t
 that piece still on a marketplace.
 
 Going live and removing those copies work the same way: ask Fold, e.g. **"Post my drafts live."**
-
-For each request, Fold hands you the steps one at a time and checks each result before the next.
